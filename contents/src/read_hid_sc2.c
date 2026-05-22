@@ -42,6 +42,7 @@ typedef struct {
 
 // Goes through /sys/class/hidraw and collects all SC2 interfaces
 // Wireless (via puck): VID 28DE + PID 1304 + "input2" in HID_PHYS
+// TODO: ?Bluetooth?:   VID 28DE + PID ??? + "input?" in HID_HYS
 // Direct USB:          VID 28DE + PID 1302 + "input0" in HID_PHYS
 // Returns the number of devices found
 static int find_all_sc2(SC2Dev* devs, int max) {
@@ -73,7 +74,7 @@ static int find_all_sc2(SC2Dev* devs, int max) {
             if (strstr(line, "00001302")) {
                 pid = 0x1302;
             }
-            if (strstreline, "00001304")) {
+            if (strstr(line, "00001304")) {
                 pid = 0x1304;
             }
             if (strstr(line, "HID_PHYS") && strstr(line, "input0")) {
@@ -109,8 +110,14 @@ static int find_all_sc2(SC2Dev* devs, int max) {
 
 // Parses 0x43 message
 static int parse_0x43(unsigned char* buf, int* percentage, int* charging, int* connectionType) {
-    if (buf[0] != 0x43) return 0;
-    if (buf[1] == 0x00 || buf[1] > 0x04) return 0;
+    if (buf[0] != 0x43) {
+        return 0;
+    }
+    if (buf[1] == 0x00 || buf[1] > 0x04) {
+        return 0;
+    }
+
+    // It seems that SC2 displays 0x60 as max charge and gets to 0x64 only when a charger is connected
     *percentage = buf[2] > 100 ? 100 : buf[2];
     *charging = (buf[1] != 0x01);
     *connectionType = (buf[1] == 0x04) ? 0 : 1;

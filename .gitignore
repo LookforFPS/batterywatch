@@ -1,5 +1,6 @@
 # Build output
 dist/
+contents/bin/read_hid_sc2
 
 # User/Local config
 *.user

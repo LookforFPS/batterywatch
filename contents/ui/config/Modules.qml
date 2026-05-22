@@ -16,6 +16,9 @@ KCMUtils.SimpleKCM {
     property alias cfg_enableKDEConnectIntegration: enableKDEConnectIntegration.checked
     property alias cfg_kdeConnectPollingTime: kdeConnectPollingTime.value
 
+    property alias cfg_enableSteamControllerIntegration: enableSteamControllerIntegration.checked
+    property alias cfg_steamControllerPollingTime: steamControllerPollingTime.value
+
     Kirigami.FormLayout {
         id: page
 
@@ -27,10 +30,12 @@ KCMUtils.SimpleKCM {
             Kirigami.FormData.label: i18n("OpenLinkHub Integration")
         }
 
-        QQC2.CheckBox {
-            id: enableOpenLinkHubIntegration
-            Kirigami.FormData.label: i18n("Enable: ")
-            text: i18n("Enabled")
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Enable")
+
+            QQC2.CheckBox {
+                id: enableOpenLinkHubIntegration
+        }
         }
 
         QQC2.SpinBox {
@@ -94,6 +99,35 @@ KCMUtils.SimpleKCM {
             QQC2.Label {
                 text: i18n("s")
                 opacity: enableKDEConnectIntegration.checked ? 0.7 : 0.5
+            }
+        }
+
+        Item {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("Steam Controller 2 Integration")
+        }
+
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Enable")
+
+            QQC2.CheckBox {
+                id: enableSteamControllerIntegration
+            }
+        }
+
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Polling interval")
+
+            QQC2.SpinBox {
+                id: steamControllerPollingTime
+                enabled: enableSteamControllerIntegration.checked
+                from: 5
+                to: 3600
+            }
+
+            QQC2.Label {
+                text: i18n("s")
+                opacity: enableSteamControllerIntegration.checked ? 0.7 : 0.5
             }
         }
     }

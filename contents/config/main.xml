@@ -130,4 +130,13 @@
       <default>5</default>
     </entry>
   </group>
+
+  <group name="SteamController">
+    <entry name="enableSteamControllerIntegration" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="steamControllerPollingTime" type="Int">
+      <default>5</default>
+    </entry>
+  </group>
 </kcfg>
