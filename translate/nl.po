@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-22 13:41+0200\n"
+"POT-Creation-Date: 2026-05-22 14:27+0200\n"
 "PO-Revision-Date: 2026-03-25 16:45+0100\n"
 "Last-Translator: Heimen Stoffels <vistausss@fastmail.com>\n"
 "Language-Team: \n"
@@ -188,12 +188,30 @@ msgid "s"
 msgstr "s"
 
 #: ../contents/ui/config/Modules.qml
+msgid "Sets the interval for OpenRazer device state updates."
+msgstr "Stelt het interval in voor statusupdates van OpenRazer-apparaten."
+
+#: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "KDE Connect-integratie"
 
 #: ../contents/ui/config/Modules.qml
+msgid "Sets the interval for KDE Connect device state updates."
+msgstr "Stelt het interval in voor statusupdates van KDE Connect-apparaten."
+
+#: ../contents/ui/config/Modules.qml
 msgid "Steam Controller 2 Integration"
 msgstr "Steam Controller 2-integratie"
+
+#: ../contents/ui/config/Modules.qml
+msgid ""
+"Sets the interval for Steam Controller 2 state updates when idle or not "
+"connected.\n"
+"When active, the controller updates automatically."
+msgstr ""
+"Stelt het interval in voor statusupdates van de Steam Controller 2 wanneer "
+"deze inactief of niet verbonden is.\n"
+"Wanneer actief worden updates automatisch uitgevoerd."
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml

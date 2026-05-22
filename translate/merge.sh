@@ -187,10 +187,12 @@ for cat in $catalogs; do
 	if [ -z "$langName" ] || [ "$langName" = "LANGUAGE" ] || [ "$langName" = "$catLocale" ]; then
 		# Fallback to a few known ones or just use the locale capitalized
 		case "$catLocale" in
+			cs) langName="Czech" ;;
 			he) langName="Hebrew" ;;
 			hu) langName="Hungarian" ;;
 			nl) langName="Dutch" ;;
 			pl) langName="Polish" ;;
+			ru) langName="Russian" ;;
 			*) langName=$(echo "$catLocale" | awk '{print toupper(substr($0,1,1))tolower(substr($0,2))}') ;;
 		esac
 	fi

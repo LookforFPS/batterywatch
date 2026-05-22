@@ -71,6 +71,16 @@ KCMUtils.SimpleKCM {
                 text: i18n("s")
                 opacity: enableOpenRazerIntegration.checked ? 0.7 : 0.5
             }
+
+            QQC2.ToolButton {
+                id: openRazerPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: openRazerPollingHelp.hovered
+                    text: i18n("Sets the interval for OpenRazer device state updates.")
+                }
+            }
         }
 
         Item {
@@ -100,6 +110,16 @@ KCMUtils.SimpleKCM {
                 text: i18n("s")
                 opacity: enableKDEConnectIntegration.checked ? 0.7 : 0.5
             }
+
+            QQC2.ToolButton {
+                id: kdeConnectPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: kdeConnectPollingHelp.hovered
+                    text: i18n("Sets the interval for KDE Connect device state updates.")
+                }
+            }
         }
 
         Item {
@@ -128,6 +148,16 @@ KCMUtils.SimpleKCM {
             QQC2.Label {
                 text: i18n("s")
                 opacity: enableSteamControllerIntegration.checked ? 0.7 : 0.5
+            }
+
+            QQC2.ToolButton {
+                id: steamControllerPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: steamControllerPollingHelp.hovered
+                    text: i18n("Sets the interval for Steam Controller 2 state updates when idle or not connected.\nWhen active, the controller updates automatically.")
+                }
             }
         }
     }
