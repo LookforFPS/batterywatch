@@ -8,7 +8,7 @@
  *  0x42 - Gamepad controls -> sticks, std buttons
  *  0x43 - see below
  *  0x44 - Haptic motors
- *  0x45 - Trakpads
+ *  0x45 - Trackpads
  * 
  * Report 0x43 layout:
  *  byte[0] = 0x43 \\ Report ID
@@ -124,7 +124,7 @@ static int parse_0x43(unsigned char* buf, int* percentage, int* charging, int* c
     return 1;
 }
 
-// Waits for 0x43 report arrives or for TIMEOUT_SEC deadline to be reached
+// Waits for 0x43 report to arrive or for TIMEOUT_SEC deadline to be reached
 // O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU utilisation
 static int read_status(const char* devpath, int* percentage, int* charging, int* connectionType) {
     int fd = open(devpath, O_RDONLY | O_NONBLOCK);

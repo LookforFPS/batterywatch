@@ -225,7 +225,7 @@ msgstr "Все устройства скрыты"
 #. i18n: %1 is the charge percentage value; the trailing % is a literal percent sign.
 #: ../contents/ui/main.qml
 msgid "%1%"
-msgstr ""
+msgstr "%1%"
 
 #: ../contents/ui/main.qml
 msgid "Device Battery Levels"

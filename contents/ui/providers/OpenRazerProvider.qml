@@ -5,7 +5,7 @@ import "../DeviceUtils.js" as DeviceUtils
 
 // Razer device provider
 // Based on UPowerProvider.qml
-// Author: TheDogORB <thedogorb@proton.me?
+// Author: TheDogORB <thedogorb@proton.me>
 
 Item {
     id: root

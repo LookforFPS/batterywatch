@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-22 13:37+0200\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: 2026-05-18 17:22+2\n"
 "Last-Translator: TheDogORB <thedogorb@proton.me> \n"
 "Language-Team: \n"
@@ -163,7 +163,7 @@ msgstr "OpenLinkHub Integrace"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Enable"
-msgstr "Povol"
+msgstr "Povolit"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
