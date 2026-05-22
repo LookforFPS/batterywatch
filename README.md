@@ -88,11 +88,11 @@ For instructions on how to contribute translations, add new languages, or test c
 | Locale | Language | Status | % Done |
 |--------|----------|--------|--------|
 | cs     | Czech        | ✅ Complete    |   100% |
-| he     | Hebrew       | 🟡 In Progress |    98% |
-| hu     | Hungarian    | 🟡 In Progress |    98% |
-| nl     | Dutch        | 🟡 In Progress |    98% |
-| pl     | polish       | 🟡 In Progress |    98% |
-| ru     | Russian      | 🟡 In Progress |    95% |
+| he     | Hebrew       | ✅ Complete    |   100% |
+| hu     | Hungarian    | ✅ Complete    |   100% |
+| nl     | Dutch        | ✅ Complete    |   100% |
+| pl     | polish       | ✅ Complete    |   100% |
+| ru     | Russian      | ✅ Complete    |   100% |
 <!-- TRANSLATIONS_END -->
 
 
