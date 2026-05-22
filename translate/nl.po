@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: 2026-03-25 16:45+0100\n"
 "Last-Translator: Heimen Stoffels <vistausss@fastmail.com>\n"
 "Language-Team: \n"
@@ -168,12 +168,8 @@ msgid "OpenLinkHub Integration"
 msgstr "OpenLinkHub-integratie"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "Inschakelen: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "Ingeschakeld"
+msgid "Enable"
+msgstr "Inschakelen"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -182,10 +178,6 @@ msgstr "Poort: "
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
 msgstr "OpenRazer-integratie"
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "Inschakelen"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
@@ -198,6 +190,10 @@ msgstr "s"
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "KDE Connect-integratie"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
+msgstr "Steam Controller 2-integratie"
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -249,6 +245,7 @@ msgstr "Herlaad de apparatenlijst"
 
 #: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml
 #: ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "Onbekend apparaat"
 
@@ -406,3 +403,9 @@ msgstr "Onbekend Razer-apparaat"
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr ""
 "BatteryWatch: er wordt een UPower-voorrangsregel ingesteld voor '%1': %2 → %3"
+
+#~ msgid "Enable: "
+#~ msgstr "Inschakelen: "
+
+#~ msgid "Enabled"
+#~ msgstr "Ingeschakeld"

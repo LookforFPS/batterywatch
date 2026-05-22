@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -158,11 +158,7 @@ msgid "OpenLinkHub Integration"
 msgstr ""
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr ""
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
+msgid "Enable"
 msgstr ""
 
 #: ../contents/ui/config/Modules.qml
@@ -171,10 +167,6 @@ msgstr ""
 
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
-msgstr ""
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
 msgstr ""
 
 #: ../contents/ui/config/Modules.qml
@@ -187,6 +179,10 @@ msgstr ""
 
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
+msgstr ""
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
 msgstr ""
 
 #. i18n: %1 is the version number.
@@ -237,7 +233,7 @@ msgstr ""
 msgid "Refresh devices"
 msgstr ""
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr ""
 

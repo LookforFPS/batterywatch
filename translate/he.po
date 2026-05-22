@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: 2026-01-03 21:15+0200\n"
 "Last-Translator: Automatically generated\n"
 "Language-Team: none\n"
@@ -162,12 +162,8 @@ msgid "OpenLinkHub Integration"
 msgstr "אינטגרציה עם OpenLinkHub"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "הפעל: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "פעיל"
+msgid "Enable"
+msgstr "הפעל"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -176,10 +172,6 @@ msgstr "פורט: "
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
 msgstr "אינטגרציה עם OpenRazer"
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "הפעל"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
@@ -192,6 +184,10 @@ msgstr "ש׳"
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "אינטגרציה עם KDE Connect"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
+msgstr "אינטגרציה עם Steam Controller 2"
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -241,7 +237,7 @@ msgstr "ריענון"
 msgid "Refresh devices"
 msgstr "ריענון רשימת מכשירים"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "מכשיר לא ידוע"
 
@@ -397,3 +393,9 @@ msgstr "מכשיר Razer לא ידוע"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: דורס סוג מכשיר UPower עבור '%1': %2 -> %3"
+
+#~ msgid "Enable: "
+#~ msgstr "הפעל: "
+
+#~ msgid "Enabled"
+#~ msgstr "פעיל"

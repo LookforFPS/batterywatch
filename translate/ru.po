@@ -7,7 +7,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: 2026-05-18 02:44+0300\n"
 "Last-Translator: dev <dd3v@altmails.com>\n"
 "Language-Team: Russian <gnu@d07.ru>\n"
@@ -164,12 +164,8 @@ msgid "OpenLinkHub Integration"
 msgstr "Интеграция с OpenLinkHub"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "Включить: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "Включено"
+msgid "Enable"
+msgstr "Включить"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -178,10 +174,6 @@ msgstr "Порт: "
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
 msgstr "Интеграция с OpenRazer"
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "Включить"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
@@ -194,6 +186,10 @@ msgstr "с"
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "Интеграция с KDE Connect"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
+msgstr "Интеграция с Steam Controller 2"
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -243,7 +239,7 @@ msgstr "Обновить"
 msgid "Refresh devices"
 msgstr "Обновить устройства"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "Неизвестное устройство"
 
@@ -399,3 +395,9 @@ msgstr "Неизвестное устройство Razer"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: применяется переопределение устройства UPower для «%1»: %2 -> %3"
+
+#~ msgid "Enable: "
+#~ msgstr "Включить: "
+
+#~ msgid "Enabled"
+#~ msgstr "Включено"

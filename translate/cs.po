@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:37+0200\n"
 "PO-Revision-Date: 2026-05-18 17:22+2\n"
 "Last-Translator: TheDogORB <thedogorb@proton.me> \n"
 "Language-Team: \n"
@@ -162,12 +162,8 @@ msgid "OpenLinkHub Integration"
 msgstr "OpenLinkHub Integrace"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "Povolit: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "Povoleno"
+msgid "Enable"
+msgstr "Povol"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -176,10 +172,6 @@ msgstr "Port: "
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
 msgstr "OpenRazer Integrace"
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "Povol"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
@@ -192,6 +184,10 @@ msgstr "s"
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "KDE Connect Integrace"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
+msgstr "Steam Controller 2 Integrace"
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -241,7 +237,7 @@ msgstr "Obnov"
 msgid "Refresh devices"
 msgstr "Obnov zařízení"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "Neznámé Zařízení"
 
@@ -397,3 +393,9 @@ msgstr "Neznámé Razer Zařízení"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: Aplikuji přepis UPower zařízení pro '%1': %2 -> %3"
+
+#~ msgid "Enable: "
+#~ msgstr "Povolit: "
+
+#~ msgid "Enabled"
+#~ msgstr "Povoleno"

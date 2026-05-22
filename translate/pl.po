@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-22 13:41+0200\n"
 "PO-Revision-Date: 2026-01-03 16:20+0100\n"
 "Last-Translator: AzraelBunn\n"
 "Language-Team: \n"
@@ -160,12 +160,8 @@ msgid "OpenLinkHub Integration"
 msgstr "Integracja z OpenLinkHub"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "Włącz: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "Włączona"
+msgid "Enable"
+msgstr "Włącz"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -174,10 +170,6 @@ msgstr "Port: "
 #: ../contents/ui/config/Modules.qml
 msgid "OpenRazer Integration"
 msgstr "Integracja z OpenRazer"
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "Włącz"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
@@ -190,6 +182,10 @@ msgstr "s"
 #: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "Integracja z KDE Connect"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Steam Controller 2 Integration"
+msgstr "Integracja z Steam Controller 2"
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -239,7 +235,7 @@ msgstr "Odśwież"
 msgid "Refresh devices"
 msgstr "Odśwież listę urządzeń"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "Nieznane urządzenie"
 
@@ -395,3 +391,9 @@ msgstr "Nieznane urządzenie Razer"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: Nadpisywanie urządzenia UPower. '%1': %2 -> %3"
+
+#~ msgid "Enable: "
+#~ msgstr "Włącz: "
+
+#~ msgid "Enabled"
+#~ msgstr "Włączona"
