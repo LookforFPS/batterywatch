@@ -1,6 +1,8 @@
 # Build output
 dist/
-contents/bin/read_hid_sc2
+
+# Locally compiled dev binary (prebuilt ones are tracked)
+contents/bin/read_hid_sc2.dev
 
 # User/Local config
 *.user

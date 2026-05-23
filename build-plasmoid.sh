@@ -13,11 +13,11 @@ cd "$WIDGET_DIR" || exit 1
 rm -f "$OUTPUT_DIR/$PLASMOID_NAME"
 mkdir -p "$OUTPUT_DIR"
 
-# Compile SC2 HID reader
-echo "Compiling read_hid_sc2..."
-cc -O2 -o contents/bin/read_hid_sc2 contents/src/read_hid_sc2.c || {
-    echo "Warning: compilation failed, SC2 support will be unavailable"
-}
+# Check if prebuilt binariee exist
+if [ ! -f contents/bin/read_hid_sc2.x86_64 ] || [ ! -f contents/bin/read_hid_sc2.aarch64 ]; then
+    echo "Error: pre-built binaries are missing! Run build-binaries.sh first!"
+    exit 1
+fi
 
 # Create the plasmoid file (zip) excluding screenshots and build script
 echo "Building $PLASMOID_NAME..."
