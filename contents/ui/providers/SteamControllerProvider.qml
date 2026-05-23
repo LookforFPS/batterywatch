@@ -13,7 +13,7 @@ import "../DeviceUtils.js" as DeviceUtils
 //
 // Notes:
 // 0x42 - Controls -> D-pad, sticks, paddles, buttons etc.
-// 0x43 - Charging state | Charge | Rest. unknown, might be Bluetooth? #TBD waiting for bluetooth dongle to get delivered
+// 0x43 - Charging state | Charge 
 // 0x44 - Haptics
 // 0x45 - Trackpads 
 
@@ -24,10 +24,8 @@ Item {
     // Helper binary, reads out hidraw, returns JSON with data
     readonly property string helperPath: Qt.resolvedUrl("../../bin/read_hid_sc2").toString().slice(7)
 
-    // Std connection types, BT not implemented in C file yet
-    readonly property int wiredType: 0
+    // Connection types
     readonly property int wirelessType: 1
-    readonly property int bluetoothType: 2
 
     // Data passed to the applet
     property var devices: []
@@ -82,7 +80,6 @@ Item {
                 connectionType: (typeof d.connectionType === "number") ? d.connectionType : wirelessType,
                 source: "hid-sc2",
                 batteries: emptyList,
-                bluetoothAddress: null // TBD
             }))
 
         if (result.length === devices.length) {

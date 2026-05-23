@@ -1,7 +1,10 @@
 /*
- * read_hid_sc2.c — Steam Controller 2 (Valve 28DE:1304 wireless / 28DE:1302 USB) battery reader
+ * read_hid_sc2.c — Steam Controller 2 (Valve 28DE) battery reader
+ *  28DE:1302 = USB direct
+ *  28DE:1303 = Bluetooth >>> HANDLED BY UPOWER MODULE <<<
+ *  28DE:1304 = Wireless via puck dongle
  *
- * Valve doesn't expose SC2 through upower or any other std interface, 
+ * Valve doesn't expose SC2 (usb/puck) through upower or any other std interface,
  * so it gets read out directly from hidraw
  *
  * Notes from my reverse-engineering:
@@ -9,17 +12,16 @@
  *  0x43 - see below
  *  0x44 - Haptic motors
  *  0x45 - Trackpads
- * 
+ *
  * Report 0x43 layout:
  *  byte[0] = 0x43 \\ Report ID
  *  byte[1] = connection state:
- *      - 0x01 = wireless via puck dongle
+ *      - 0x01 = wireless via puck dongle (and bluetooth)
  *      - 0x02 = puck physically connected
  *      - 0x03 = briefly engaged when puck is transitioning from puck to wireless and vice versa
  *      - 0x04 = connected via USB (charging) directly to SC2 or when connected to puck
  *  Still didn't figure out why sometimes 0x04 is enganged instead of 0x02
  *  byte[2] = battery percentage
- *  byte[3+] = might be bluetooth info? To be tested in the near future
  *
  * Author: TheDogORB <thedogorb@proton.me>
  */
@@ -41,9 +43,9 @@ typedef struct {
 } SC2Dev;
 
 // Goes through /sys/class/hidraw and collects all SC2 interfaces
-// Wireless (via puck): VID 28DE + PID 1304 + "input2" in HID_PHYS
-// TODO: ?Bluetooth?:   VID 28DE + PID ??? + "input?" in HID_HYS
 // Direct USB:          VID 28DE + PID 1302 + "input0" in HID_PHYS
+// Bluetooth:           VID 28DE + PID 1303 >>> HANDLED BY UPOWER MODULE <<<
+// Wireless (via puck): VID 28DE + PID 1304 + "input2" in HID_PHYS
 // Returns the number of devices found
 static int find_all_sc2(SC2Dev* devs, int max) {
     DIR* d = opendir("/sys/class/hidraw");
@@ -52,52 +54,49 @@ static int find_all_sc2(SC2Dev* devs, int max) {
     int count = 0;
     struct dirent* ent;
     while ((ent = readdir(d)) && count < max) {
-        if (ent->d_name[0] == '.') continue;
+        if (ent->d_name[0] == '.') { 
+            continue;
+        }
 
         char ue[256];
         snprintf(ue, sizeof(ue), "/sys/class/hidraw/%s/device/uevent", ent->d_name);
 
         FILE* f = fopen(ue, "r");
-        if (!f) continue;
+        if (!f) { 
+            continue;
+        }
 
         char line[256];
-        int vid = 0, pid = 0, iface = -1;
+        unsigned int vid = 0, pid = 0;
+        int iface = -1;
         char serial[64] = "sc2-hid";
 
-        // PID 0x1302 + interface 0 = USB to controller, wired connection
-        // TODO: Check if 0x1303 + interface 1 == bluetooth or not
-        // PID 0x1304 + interface 2 = puck
         while (fgets(line, sizeof(line), f)) {
-            if (strstr(line, "000028DE")) {
-                vid = 1;
+            // VID & PID
+            if (strncmp(line, "HID_ID=", 7) == 0) {
+                unsigned int bus, v, p;
+                if (sscanf(line + 7, "%x:%x:%x", &bus, &v, &p) == 3) {
+                    vid = v;
+                    pid = p;
+                }
             }
-            if (strstr(line, "00001302")) {
-                pid = 0x1302;
-            }
-            if (strstr(line, "00001304")) {
-                pid = 0x1304;
-            }
-            if (strstr(line, "HID_PHYS") && strstr(line, "input0")) {
-                 iface = 0;
-            }
-            if (strstr(line, "HID_PHYS") && strstr(line, "input2")) { 
-                iface = 2;
+            // Interface
+            if (strncmp(line, "HID_PHYS=", 9) == 0) {
+                char* p = strstr(line, "/input");
+                if (p) sscanf(p, "/input%d", &iface);
             }
             // Serial number
             if (strncmp(line, "HID_UNIQ=", 9) == 0) {
                 char* val = line + 9;
                 size_t n = strlen(val);
-                while (n > 0 && (val[n-1] == '\n' || val[n-1] == '\r')) {
-                    val[--n] = '\0';
-                }
-                if (n > 0) {
-                    snprintf(serial, sizeof(serial), "%s", val);
-                }
+                while (n > 0 && (val[n-1] == '\n' || val[n-1] == '\r')) val[--n] = '\0';
+                if (n > 0) snprintf(serial, sizeof(serial), "%s", val);
             }
         }
         fclose(f);
 
-        int match = vid && ((pid == 0x1304 && iface == 2) || (pid == 0x1302 && iface == 0));
+        // Check for known (supported) devices -> only SC2 in this case
+        int match = (vid == 0x28DE) && ((pid == 0x1304 && iface == 2) || (pid == 0x1302 && iface == 0));
         if (match) {
             snprintf(devs[count].devpath, sizeof(devs[count].devpath), "/dev/%s", ent->d_name);
             snprintf(devs[count].serial, sizeof(devs[count].serial), "%s", serial);
@@ -171,9 +170,9 @@ int main(void) {
     for (int i = 0; i < count; i++) {
         int percentage, charging, connectionType;
         if (!read_status(devs[i].devpath, &percentage, &charging, &connectionType)) {
-             continue;
+            continue;
         }
-        if (written > 0) { 
+        if (written > 0) {
             printf(",");
         }
         printf("{\"name\":\"Steam Controller 2\","
@@ -181,8 +180,7 @@ int main(void) {
                 "\"percentage\":%d,"
                 "\"charging\":%s,"
                 "\"connectionType\":%d,"
-                "\"deviceType\":\"gamepad\","
-                "\"bluetoothAddress\":null}",
+                "\"deviceType\":\"gamepad\"}",
                devs[i].serial, percentage, charging ? "true" : "false", connectionType);
         written++;
     }
