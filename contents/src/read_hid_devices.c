@@ -4,7 +4,6 @@
  * Author: TheDogORB <thedogorb@proton.me>
  */
 
-#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
@@ -16,8 +15,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define TIMEOUT_SEC 10
-#define MAX_DEVICES 8
+#define TIMEOUT_SEC     10
+#define MAX_DEVICES     8
+#define HID_BUFFER_SIZE 64
 
 // Based on QML states
 enum ConnectionType {
@@ -67,7 +67,7 @@ enum SC2ConnState {
 
 static int parse_sc2(const unsigned char* buf, DeviceStatus* status);
 
-// Rest of abstraction
+// Generic device abstraction
 typedef int (*ParseFn)(const unsigned char* buf, DeviceStatus* status);
 
 typedef struct {
@@ -93,17 +93,14 @@ static const DeviceDesc known_devices[] = {
     { 0x28DE, 0x1304, 2, "Steam Controller 2", "gamepad", SC2_REPORT_STATUS, 3, parse_sc2 }, // Wireless
 };
 
-
-// Goes through /sys/class/hidraw and collects all SC2 interfaces
-// Direct USB:          VID 28DE + PID 1302 + "input0" in HID_PHYS
-// Bluetooth:           VID 28DE + PID 1303 >>> HANDLED BY UPOWER MODULE <<<
-// Wireless (via puck): VID 28DE + PID 1304 + "input2" in HID_PHYS
+// Goes through /sys/class/hidraw and collects all known interfaces
 // Returns the number of devices found
 static int find_all_devices(Device* devs, int max) {
     DIR* d = opendir("/sys/class/hidraw");
     if (!d) return 0;
 
     int count = 0;
+    int n_known = sizeof(known_devices) / sizeof(known_devices[0]);
     struct dirent* ent;
     while ((ent = readdir(d)) && count < max) {
         if (ent->d_name[0] == '.') { 
@@ -118,10 +115,10 @@ static int find_all_devices(Device* devs, int max) {
             continue;
         }
 
-        char line[256];
+        char line[1024];
         unsigned int vid = 0, pid = 0;
         int iface = -1;
-        char serial[128] = "sc2-hid";
+        char serial[128] = "unknown-hid";
 
         while (fgets(line, sizeof(line), f)) {
             // VID & PID
@@ -135,7 +132,8 @@ static int find_all_devices(Device* devs, int max) {
             // Interface
             if (strncmp(line, "HID_PHYS=", 9) == 0) {
                 char* p = strstr(line, "/input");
-                if (p) sscanf(p, "/input%d", &iface);
+                if (p && sscanf(p, "/input%d", &iface) != 1)
+                    iface = -1;
             }
             // Serial number
             if (strncmp(line, "HID_UNIQ=", 9) == 0) {
@@ -148,7 +146,6 @@ static int find_all_devices(Device* devs, int max) {
         fclose(f);
 
         // Check for known (supported) devices
-        int n_known = sizeof(known_devices) / sizeof(known_devices[0]);
         const DeviceDesc* matched = NULL;
         for (int k = 0; k < n_known; k++) {
             // Early exit on unknown OEM, hunting down those ns 
@@ -202,7 +199,7 @@ static ssize_t read_report(int fd, unsigned char* buf, size_t len, struct timesp
     };
 
     // Poll() + EINTR retry loop that keeps firing until timeout is reached or data is available
-    for (;;) {
+    while (true) {
         // Calculates time left
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -243,8 +240,7 @@ static ssize_t read_report(int fd, unsigned char* buf, size_t len, struct timesp
     return n;
 }
 
-
-// Waits for 0x43 report to arrive or for TIMEOUT_SEC deadline to be reached
+// Waits for report to arrive or for TIMEOUT_SEC deadline to be reached
 // O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU utilisation
 // Returns -1 on err, 0 on timeout, and 1 on found
 static int read_status(const Device* dev, DeviceStatus* status) {
@@ -253,29 +249,34 @@ static int read_status(const Device* dev, DeviceStatus* status) {
         return -1;
     }
 
-    unsigned char buf[64];
+    int ret = 0;
+    unsigned char buf[HID_BUFFER_SIZE];
     struct timespec deadline;
     clock_gettime(CLOCK_MONOTONIC, &deadline);
     deadline.tv_sec += TIMEOUT_SEC;
-    int found = 0;
 
-    while (!found) {
+    // Keeps reading report until a valid one is found
+    while (true) {
         ssize_t n = read_report(fd, buf, sizeof(buf), deadline);
-        if (n <= 0) { 
+        if (n == 0) {
             break;
         }
-        // 0x43 needs at least 3 bytes: report ID, connection state, battery percentage
+        if (n < 0) {
+            ret = -1;
+            goto out;
+        }
         if (buf[0] != dev->desc->report_id || n < dev->desc->min_report_len) {
             continue;
         }
         if (dev->desc->parse(buf, status)) {
-            found = 1;
-            break;
+            ret = 1;
+            goto out;
         }
     }
 
+    out:
     close(fd);
-    return found;
+    return ret;
 }
 
 int main(void) {
@@ -311,6 +312,5 @@ int main(void) {
         written++;
     }
     printf("]\n");
-    // Exit after printing JSON
     return 0;
 }
