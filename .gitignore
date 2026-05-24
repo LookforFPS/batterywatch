@@ -2,7 +2,7 @@
 dist/
 
 # Locally compiled dev binary (prebuilt ones are tracked)
-contents/bin/read_hid_sc2.dev
+contents/bin/*.dev
 
 # User/Local config
 *.user

@@ -14,7 +14,7 @@ rm -f "$OUTPUT_DIR/$PLASMOID_NAME"
 mkdir -p "$OUTPUT_DIR"
 
 # Check if prebuilt binariee exist
-if [ ! -f contents/bin/read_hid_sc2.x86_64 ] || [ ! -f contents/bin/read_hid_sc2.aarch64 ]; then
+if [ ! -f contents/bin/read_hid_devices.x86_64 ] || [ ! -f contents/bin/read_hid_devices.aarch64 ]; then
     echo "Error: pre-built binaries are missing! Run build-binaries.sh first!"
     exit 1
 fi

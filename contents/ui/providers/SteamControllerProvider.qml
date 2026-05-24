@@ -8,7 +8,7 @@ import "../DeviceUtils.js" as DeviceUtils
 // Author: TheDogORB <thedogorb@proton.me>
 //
 // The SC2 doesn't support upower, hence the battery info is read out directly via hidraw.
-// To read out the controller info, a small C helper is used (read_hid_sc2, compiled from read_hid_sc2.c during build/install).
+// To read out the controller info, a small C helper is used (read_hid_devices, compiled from read_hid_devices.c during build/install).
 // Requires access to /dev/hidraw*; should be granted by default via Steam udev rules.
 //
 // Notes:
@@ -22,7 +22,7 @@ Item {
     visible: false
 
     // Helper binary, reads out hidraw, returns JSON with data
-    readonly property string helperPath: Qt.resolvedUrl("../../bin/read_hid_sc2").toString().slice(7)
+    readonly property string helperPath: Qt.resolvedUrl("../../bin/read_hid_devices").toString().slice(7)
 
     // Connection types
     readonly property int wirelessType: 1

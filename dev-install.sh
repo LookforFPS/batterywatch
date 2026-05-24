@@ -17,10 +17,10 @@ cp -r "$SOURCE_DIR" "$DEV_DIR"
 # Remove build artifacts and git files from dev copy
 rm -rf "$DEV_DIR/dist" "$DEV_DIR/.git"
 
-# Compile SC2 HID reader
-echo "Compiling read_hid_sc2..."
-cc -O2 -o "$DEV_DIR/contents/bin/read_hid_sc2" \
-       "$DEV_DIR/contents/src/read_hid_sc2.c" || \
+# Compile HID reader
+echo "Compiling read_hid_devices..."
+cc -O2 -o "$DEV_DIR/contents/bin/read_hid_devices" \
+       "$DEV_DIR/contents/src/read_hid_devices.c" || \
     echo "Warning: compilation failed, SC2 support will be unavailable"
 
 # Change the plugin ID and name to make it a separate widget
