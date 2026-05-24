@@ -1,0 +1,4 @@
+#!/bin/sh
+DIR="$(dirname "$(readlink -f "$0")")"
+ARCH="$(uname -m)"
+exec "$DIR/read_hid_devices.$ARCH" "$@"
