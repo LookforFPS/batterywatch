@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-22 14:27+0200\n"
+"POT-Creation-Date: 2026-05-25 12:19+0200\n"
 "PO-Revision-Date: 2026-03-25 16:45+0100\n"
 "Last-Translator: Heimen Stoffels <vistausss@fastmail.com>\n"
 "Language-Team: \n"
@@ -200,18 +200,17 @@ msgid "Sets the interval for KDE Connect device state updates."
 msgstr "Stelt het interval in voor statusupdates van KDE Connect-apparaten."
 
 #: ../contents/ui/config/Modules.qml
-msgid "Steam Controller 2 Integration"
-msgstr "Steam Controller 2-integratie"
+msgid "HID Devices Integration"
+msgstr "Integratie van HID-apparaten"
 
 #: ../contents/ui/config/Modules.qml
 msgid ""
-"Sets the interval for Steam Controller 2 state updates when idle or not "
-"connected.\n"
-"When active, the controller updates automatically."
+"Sets the interval for re-checking HID devices when none are connected.\n"
+"When a device is active, it updates automatically."
 msgstr ""
-"Stelt het interval in voor statusupdates van de Steam Controller 2 wanneer "
-"deze inactief of niet verbonden is.\n"
-"Wanneer actief worden updates automatisch uitgevoerd."
+"Stelt het interval in voor het controleren van HID-apparaten wanneer er geen "
+"verbonden zijn.\n"
+"Bij een actief apparaat worden updates automatisch uitgevoerd."
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -262,8 +261,8 @@ msgid "Refresh devices"
 msgstr "Herlaad de apparatenlijst"
 
 #: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml
+#: ../contents/ui/providers/HIDDevicesProvider.qml
 #: ../contents/ui/providers/OpenLinkHubProvider.qml
-#: ../contents/ui/providers/SteamControllerProvider.qml
 msgid "Unknown Device"
 msgstr "Onbekend apparaat"
 
@@ -421,6 +420,18 @@ msgstr "Onbekend Razer-apparaat"
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr ""
 "BatteryWatch: er wordt een UPower-voorrangsregel ingesteld voor '%1': %2 → %3"
+
+#~ msgid "Steam Controller 2 Integration"
+#~ msgstr "Steam Controller 2-integratie"
+
+#~ msgid ""
+#~ "Sets the interval for Steam Controller 2 state updates when idle or not "
+#~ "connected.\n"
+#~ "When active, the controller updates automatically."
+#~ msgstr ""
+#~ "Stelt het interval in voor statusupdates van de Steam Controller 2 "
+#~ "wanneer deze inactief of niet verbonden is.\n"
+#~ "Wanneer actief worden updates automatisch uitgevoerd."
 
 #~ msgid "Enable: "
 #~ msgstr "Inschakelen: "

@@ -6,7 +6,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-22 14:27+0200\n"
+"POT-Creation-Date: 2026-05-25 12:19+0200\n"
 "PO-Revision-Date: 2026-01-03 16:20+0100\n"
 "Last-Translator: AzraelBunn\n"
 "Language-Team: \n"
@@ -192,16 +192,16 @@ msgid "Sets the interval for KDE Connect device state updates."
 msgstr "Ustawia interwał aktualizacji stanu urządzeń KDE Connect."
 
 #: ../contents/ui/config/Modules.qml
-msgid "Steam Controller 2 Integration"
-msgstr "Integracja z Steam Controller 2"
+msgid "HID Devices Integration"
+msgstr "Integracja urządzeń HID"
 
 #: ../contents/ui/config/Modules.qml
 msgid ""
-"Sets the interval for Steam Controller 2 state updates when idle or not connected.\n"
-"When active, the controller updates automatically."
+"Sets the interval for re-checking HID devices when none are connected.\n"
+"When a device is active, it updates automatically."
 msgstr ""
-"Ustawia interwał aktualizacji stanu Steam Controller 2, gdy jest bezczynny lub niepodłączony.\n"
-"Gdy aktywny, kontroler aktualizuje się automatycznie."
+"Określa interwał sprawdzania urządzeń HID, gdy żadne nie jest podłączone.\n"
+"Gdy urządzenie jest aktywne, aktualizacja następuje automatycznie."
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -251,7 +251,7 @@ msgstr "Odśwież"
 msgid "Refresh devices"
 msgstr "Odśwież listę urządzeń"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/HIDDevicesProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
 msgid "Unknown Device"
 msgstr "Nieznane urządzenie"
 
@@ -407,6 +407,16 @@ msgstr "Nieznane urządzenie Razer"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: Nadpisywanie urządzenia UPower. '%1': %2 -> %3"
+
+#~ msgid "Steam Controller 2 Integration"
+#~ msgstr "Integracja z Steam Controller 2"
+
+#~ msgid ""
+#~ "Sets the interval for Steam Controller 2 state updates when idle or not connected.\n"
+#~ "When active, the controller updates automatically."
+#~ msgstr ""
+#~ "Ustawia interwał aktualizacji stanu Steam Controller 2, gdy jest bezczynny lub niepodłączony.\n"
+#~ "Gdy aktywny, kontroler aktualizuje się automatycznie."
 
 #~ msgid "Enable: "
 #~ msgstr "Włącz: "

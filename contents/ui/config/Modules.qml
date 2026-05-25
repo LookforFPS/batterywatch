@@ -16,8 +16,8 @@ KCMUtils.SimpleKCM {
     property alias cfg_enableKDEConnectIntegration: enableKDEConnectIntegration.checked
     property alias cfg_kdeConnectPollingTime: kdeConnectPollingTime.value
 
-    property alias cfg_enableSteamControllerIntegration: enableSteamControllerIntegration.checked
-    property alias cfg_steamControllerPollingTime: steamControllerPollingTime.value
+    property alias cfg_enableHIDIntegration: enableHIDIntegration.checked
+    property alias cfg_hidPollingTime: hidPollingTime.value
 
     Kirigami.FormLayout {
         id: page
@@ -124,14 +124,14 @@ KCMUtils.SimpleKCM {
 
         Item {
             Kirigami.FormData.isSection: true
-            Kirigami.FormData.label: i18n("Steam Controller 2 Integration")
+            Kirigami.FormData.label: i18n("HID Devices Integration")
         }
 
         QQL.RowLayout {
             Kirigami.FormData.label: i18n("Enable")
 
             QQC2.CheckBox {
-                id: enableSteamControllerIntegration
+                id: enableHIDIntegration
             }
         }
 
@@ -139,24 +139,24 @@ KCMUtils.SimpleKCM {
             Kirigami.FormData.label: i18n("Polling interval")
 
             QQC2.SpinBox {
-                id: steamControllerPollingTime
-                enabled: enableSteamControllerIntegration.checked
+                id: hidPollingTime
+                enabled: enableHIDIntegration.checked
                 from: 5
                 to: 3600
             }
 
             QQC2.Label {
                 text: i18n("s")
-                opacity: enableSteamControllerIntegration.checked ? 0.7 : 0.5
+                opacity: enableHIDIntegration.checked ? 0.7 : 0.5
             }
 
             QQC2.ToolButton {
-                id: steamControllerPollingHelp
+                id: hidPollingHelp
                 icon.name: "help-about"
 
                 QQC2.ToolTip {
-                    visible: steamControllerPollingHelp.hovered
-                    text: i18n("Sets the interval for Steam Controller 2 state updates when idle or not connected.\nWhen active, the controller updates automatically.")
+                    visible: hidPollingHelp.hovered
+                    text: i18n("Sets the interval for re-checking HID devices when none are connected.\nWhen a device is active, it updates automatically.")
                 }
             }
         }

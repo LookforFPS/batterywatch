@@ -3,20 +3,12 @@ import org.kde.plasma.plasma5support 2.0 as P5Support
 import org.kde.plasma.plasmoid 2.0
 import "../DeviceUtils.js" as DeviceUtils
 
-// Steam Controller 2 (Valve 28DE:1304 wireless / 28DE:1302 USB) battery provider
+// HID battery provider: reads devices not exposed via upower directly from hidraw
 // Based on OpenRazerProvider.qml
 // Author: TheDogORB <thedogorb@proton.me>
 //
-// The SC2 doesn't support upower, hence the battery info is read out directly via hidraw.
-// To read out the controller info, a small C helper is used (read_hid_devices, compiled from read_hid_devices.c during build/install).
+// Uses a small C helper (/conents/src/read_hid_devices.c) that matches known devices and returns JSON
 // Requires access to /dev/hidraw*; should be granted by default via Steam udev rules.
-//
-// Notes:
-// 0x42 - Controls -> D-pad, sticks, paddles, buttons etc.
-// 0x43 - Charging state | Charge 
-// 0x44 - Haptics
-// 0x45 - Trackpads 
-
 Item {
     id: root
     visible: false
@@ -34,11 +26,10 @@ Item {
     property var pendingData: null
     readonly property var emptyList: []
 
-    // UI enabler
-    property bool scEnabled: Plasmoid.configuration.enableSteamControllerIntegration
+    property bool hidEnabled: Plasmoid.configuration.enableHIDIntegration
 
-    onScEnabledChanged: {
-        if (!scEnabled) {
+    onHidEnabledChanged: {
+        if (!hidEnabled) {
             devices = []
             pendingData = null
             retryTimer.stop()
@@ -78,7 +69,7 @@ Item {
                 type: d.deviceType,
                 icon: DeviceUtils.getIconForType(d.deviceType),
                 connectionType: (typeof d.connectionType === "number") ? d.connectionType : wirelessType,
-                source: "hid-sc2",
+                source: "hid",
                 batteries: emptyList,
             }))
 
@@ -102,7 +93,7 @@ Item {
     // ═══════════════════════════════════════════════════════════════════════
 
     // Refreshes on report every ~3-5s
-    // When the controller is disconnected, timer is used instead to check for new SC2 devices
+    // When no device is present, retryTimer is used for periodic re-checks
     P5Support.DataSource {
         id: pollSource
         engine: "executable"
@@ -112,7 +103,7 @@ Item {
         onNewData: (src, data) => {
             disconnectSource(src)
 
-            if (!root.scEnabled) {
+            if (!root.hidEnabled) {
                 root.devices = []
                 return
             }
@@ -137,14 +128,14 @@ Item {
                 // Reschedules immiedately, hidraw gets updated every ~3-5s
                 Qt.callLater(root.refresh)
             } catch (e) {
-                console.warn("BatteryWatch SC2: Failed to parse helper output:", e)
+                console.warn("BatteryWatch HID: Failed to parse helper output:", e)
                 root.devices = []
                 retryTimer.restart()
             }
         }
 
         Component.onCompleted: {
-            if (root.scEnabled)
+            if (root.hidEnabled)
                 root.refresh()
         }
     }
@@ -153,12 +144,11 @@ Item {
     // TIMERS
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Polling timer, used only when the controller is missing as it updates on signal refresh otherwise
-    // Signal is received every ~3-5s
+    // Polling timer, used only when no device is present; active devices reschedule via Qt.callLater
     // Watcher using inotify would be less demanding but would required dependency
     Timer {
         id: retryTimer
-        interval: Plasmoid.configuration.steamControllerPollingTime * 1000
+        interval: Plasmoid.configuration.hidPollingTime * 1000
         repeat: false
         onTriggered: root.refresh()
     }

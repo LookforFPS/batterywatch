@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-22 14:27+0200\n"
+"POT-Creation-Date: 2026-05-25 12:19+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -190,13 +190,13 @@ msgid "Sets the interval for KDE Connect device state updates."
 msgstr ""
 
 #: ../contents/ui/config/Modules.qml
-msgid "Steam Controller 2 Integration"
+msgid "HID Devices Integration"
 msgstr ""
 
 #: ../contents/ui/config/Modules.qml
 msgid ""
-"Sets the interval for Steam Controller 2 state updates when idle or not connected.\n"
-"When active, the controller updates automatically."
+"Sets the interval for re-checking HID devices when none are connected.\n"
+"When a device is active, it updates automatically."
 msgstr ""
 
 #. i18n: %1 is the version number.
@@ -247,7 +247,7 @@ msgstr ""
 msgid "Refresh devices"
 msgstr ""
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml ../contents/ui/providers/SteamControllerProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/HIDDevicesProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
 msgid "Unknown Device"
 msgstr ""
 

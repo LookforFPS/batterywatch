@@ -131,11 +131,11 @@
     </entry>
   </group>
 
-  <group name="SteamController">
-    <entry name="enableSteamControllerIntegration" type="Bool">
+  <group name="HID">
+    <entry name="enableHIDIntegration" type="Bool">
       <default>true</default>
     </entry>
-    <entry name="steamControllerPollingTime" type="Int">
+    <entry name="hidPollingTime" type="Int">
       <default>5</default>
     </entry>
   </group>
