@@ -7,7 +7,7 @@ import "../DeviceUtils.js" as DeviceUtils
 // Based on OpenRazerProvider.qml
 // Author: TheDogORB <thedogorb@proton.me>
 //
-// Uses a small C helper (/conents/src/read_hid_devices.c) that matches known devices and returns JSON
+// Uses a small Python helper (bin/read_hid_devices) that matches known devices and returns JSON
 // Requires access to /dev/hidraw*; should be granted by default via Steam udev rules.
 Item {
     id: root

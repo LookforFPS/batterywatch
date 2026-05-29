@@ -13,12 +13,6 @@ cd "$WIDGET_DIR" || exit 1
 rm -f "$OUTPUT_DIR/$PLASMOID_NAME"
 mkdir -p "$OUTPUT_DIR"
 
-# Check if prebuilt binaries exist
-if [ ! -f contents/bin/read_hid_devices.x86_64 ] || [ ! -f contents/bin/read_hid_devices.aarch64 ]; then
-    echo "Error: pre-built binaries are missing! Run build-binaries.sh first!"
-    exit 1
-fi
-
 # Create the plasmoid file (zip) excluding screenshots and build script
 echo "Building $PLASMOID_NAME..."
 zip -r "$OUTPUT_DIR/$PLASMOID_NAME" . \
@@ -29,9 +23,7 @@ zip -r "$OUTPUT_DIR/$PLASMOID_NAME" . \
     -x "dev-restart-plasma.sh" \
     -x "dist/*" \
     -x ".git/*" \
-    -x ".gitignore" \
-    -x "contents/src/*" \
-    -x "contents/bin/*.dev"
+    -x ".gitignore"
 
 if [ $? -eq 0 ]; then
     echo "Successfully created: $OUTPUT_DIR/$PLASMOID_NAME"

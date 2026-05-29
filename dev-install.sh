@@ -17,11 +17,8 @@ cp -r "$SOURCE_DIR" "$DEV_DIR"
 # Remove build artifacts and git files from dev copy
 rm -rf "$DEV_DIR/dist" "$DEV_DIR/.git"
 
-# Compile HID reader
-echo "Compiling read_hid_devices..."
-cc -O2 -o "$DEV_DIR/contents/bin/read_hid_devices" \
-       "$DEV_DIR/contents/src/read_hid_devices.c" || \
-    echo "Warning: compilation failed, SC2 support will be unavailable"
+# HID reader is a plain Python script, no build step - just make sure it is executable
+chmod +x "$DEV_DIR/contents/bin/read_hid_devices"
 
 # Change the plugin ID and name to make it a separate widget
 sed -i 's/com.github.itayavra.batterywatch/'"$DEV_ID"'/g' "$DEV_DIR/metadata.json"

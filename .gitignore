@@ -1,8 +1,9 @@
 # Build output
 dist/
 
-# Locally compiled dev binary (prebuilt ones are tracked)
-contents/bin/*.dev
+# Python cache
+__pycache__/
+*.pyc
 
 # User/Local config
 *.user
