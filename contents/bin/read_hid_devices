@@ -37,7 +37,7 @@ class DataPos(NamedTuple):
 
 # Points to a location from where a connection state is read out
 # states holds a dict of possible states in which device can be, if not present defaults to charging = false
-# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state 
+# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state
 class ChargingStates(NamedTuple):
     pos:    DataPos         # Location of state ID byte
     states: dict[int, bool] # ID -> charging True/False; missing ID defaults to False
@@ -46,20 +46,26 @@ class ChargingStates(NamedTuple):
 # InputStream is being sent via a msg every few seconds (~3.5 for SC2)
 # This power scheme supports only devices which periodically send its battery state -> Steam Controller, DualShock etc.
 class InputStreamSchema(NamedTuple):
-    charge:             DataPos                         # Where to look for battery charge
-    charge_range:       tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
-    status:             DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
-    init_request:       bytes | None = None             # Optional request packet to send before reading
+    charge:       DataPos                         # Where to look for battery charge
+    charge_range: tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
+    status:       DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
+
+# Device responds to a request packet with a battery report (e.g. Keychron M5)
+class RequestSchema(NamedTuple):
+    charge:       DataPos
+    charge_range: tuple[int, int] | None
+    status:       DataPos | ChargingStates | None
+    request:      bytes                           # Packet to send before reading; device replies with battery report
 
 # Main class
 # Represents a device, and holds all the important data used for reading it out
 class Device(NamedTuple):
-    name:           str                         # Device name e.g. "Steam Controller"
-    device_type:    DeviceType                  # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
-    vid:            int                         # Vendor ID
-    variants:       tuple[DeviceVariant, ...]   # VID, PID, iface used by device - used as path for where to look up device data
-    source:         InputStreamSchema           # How power is read, currently only InputStreamSchema exits
-    parse:          Callable | None             # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
+    name:           str                                  # Device name e.g. "Steam Controller"
+    device_type:    DeviceType                           # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
+    vid:            int                                  # Vendor ID
+    variants:       tuple[DeviceVariant, ...]            # VID, PID, iface used by device - used as path for where to look up device data
+    source:         InputStreamSchema | RequestSchema    # How power is read
+    parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
 
 # List of known/supported devices
 # iface = None means that any interface contains battery data
@@ -71,11 +77,11 @@ KNOWN_DEVICES = [
         variants=(
             DeviceVariant(0xd028, None),
         ),
-        source = InputStreamSchema(
-            charge = DataPos(0xb3, 20),
+        source = RequestSchema(
+            charge   = DataPos(0xb3, 20),
             charge_range = None,
-            status = None,
-            init_request = bytes.fromhex('b306') + b'\x00' * 62
+            status   = None,
+            request  = bytes.fromhex('b306') + b'\x00' * 62,
         ),
         parse=None,
     ),
@@ -241,6 +247,14 @@ def interpret(schema, buffers):
 
 
 def _udev_hint(dev, mode):
+    # Use a tmpfile sentinel so we only print once per device, not every poll cycle
+    sentinel = f"/tmp/.bw_hint_{os.path.basename(dev.devpath)}"
+    if os.path.exists(sentinel):
+        return
+    try:
+        open(sentinel, 'w').close()
+    except OSError:
+        pass
     print(
         f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
         f"  Fix: create /etc/udev/rules.d/70-batterywatch-hid.rules with:\n"
@@ -249,9 +263,9 @@ def _udev_hint(dev, mode):
         file=sys.stderr
     )
 
-# Opens a hidraw device, sends init_request if needed. Returns fd or None.
+# Opens a hidraw device, sends request packet if schema requires it. Returns fd or None.
 def open_device(dev, schema):
-    needs_write = schema.init_request is not None
+    needs_write = isinstance(schema, RequestSchema)
     flags = os.O_RDWR if needs_write else os.O_RDONLY
     try:
         fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
@@ -262,7 +276,7 @@ def open_device(dev, schema):
 
     if needs_write:
         try:
-            os.write(fd, schema.init_request)
+            os.write(fd, schema.request)
         except OSError:
             os.close(fd)
             return None
