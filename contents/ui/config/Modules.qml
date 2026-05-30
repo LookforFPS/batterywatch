@@ -16,6 +16,9 @@ KCMUtils.SimpleKCM {
     property alias cfg_enableKDEConnectIntegration: enableKDEConnectIntegration.checked
     property alias cfg_kdeConnectPollingTime: kdeConnectPollingTime.value
 
+    property alias cfg_enableHIDIntegration: enableHIDIntegration.checked
+    property alias cfg_hidPollingTime: hidPollingTime.value
+
     Kirigami.FormLayout {
         id: page
 
@@ -27,10 +30,12 @@ KCMUtils.SimpleKCM {
             Kirigami.FormData.label: i18n("OpenLinkHub Integration")
         }
 
-        QQC2.CheckBox {
-            id: enableOpenLinkHubIntegration
-            Kirigami.FormData.label: i18n("Enable: ")
-            text: i18n("Enabled")
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Enable")
+
+            QQC2.CheckBox {
+                id: enableOpenLinkHubIntegration
+        }
         }
 
         QQC2.SpinBox {
@@ -66,6 +71,16 @@ KCMUtils.SimpleKCM {
                 text: i18n("s")
                 opacity: enableOpenRazerIntegration.checked ? 0.7 : 0.5
             }
+
+            QQC2.ToolButton {
+                id: openRazerPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: openRazerPollingHelp.hovered
+                    text: i18n("Sets the interval for OpenRazer device state updates.")
+                }
+            }
         }
 
         Item {
@@ -94,6 +109,55 @@ KCMUtils.SimpleKCM {
             QQC2.Label {
                 text: i18n("s")
                 opacity: enableKDEConnectIntegration.checked ? 0.7 : 0.5
+            }
+
+            QQC2.ToolButton {
+                id: kdeConnectPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: kdeConnectPollingHelp.hovered
+                    text: i18n("Sets the interval for KDE Connect device state updates.")
+                }
+            }
+        }
+
+        Item {
+            Kirigami.FormData.isSection: true
+            Kirigami.FormData.label: i18n("HID Devices Integration")
+        }
+
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Enable")
+
+            QQC2.CheckBox {
+                id: enableHIDIntegration
+            }
+        }
+
+        QQL.RowLayout {
+            Kirigami.FormData.label: i18n("Polling interval")
+
+            QQC2.SpinBox {
+                id: hidPollingTime
+                enabled: enableHIDIntegration.checked
+                from: 5
+                to: 3600
+            }
+
+            QQC2.Label {
+                text: i18n("s")
+                opacity: enableHIDIntegration.checked ? 0.7 : 0.5
+            }
+
+            QQC2.ToolButton {
+                id: hidPollingHelp
+                icon.name: "help-about"
+
+                QQC2.ToolTip {
+                    visible: hidPollingHelp.hovered
+                    text: i18n("Sets the interval for re-checking HID devices when none are connected.\nWhen a device is active, it updates automatically.")
+                }
             }
         }
     }

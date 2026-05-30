@@ -5,7 +5,7 @@ import "../DeviceUtils.js" as DeviceUtils
 
 // Razer device provider
 // Based on UPowerProvider.qml
-// Author: TheDogORB
+// Author: TheDogORB <thedogorb@proton.me>
 
 Item {
     id: root
@@ -84,12 +84,12 @@ Item {
                 name: d.name || i18n("Unknown Razer Device"),
                 serial: id,
                 percentage: d.battery,
+                charging: d.charging === true,
                 type: d.type || "unknown",
                 icon: DeviceUtils.getIconForType(d.type || "unknown"),
                 connectionType: wirelessType,   // Always wireless, openRazer doesn't support Bluetooth devices -> handled by kernel
                 source: "openrazer",
-                batteries: emptyList,           // OpenRazer does not support multiple batteries, only razer.device.power.getBattery() is exposed
-                charging: d.charging === true
+                batteries: emptyList           // OpenRazer does not support multiple batteries, only razer.device.power.getBattery() is exposed
             });
         }
 

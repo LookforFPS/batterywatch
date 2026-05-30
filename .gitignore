@@ -1,6 +1,10 @@
 # Build output
 dist/
 
+# Python cache
+__pycache__/
+*.pyc
+
 # User/Local config
 *.user
 *.ini

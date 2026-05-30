@@ -8,11 +8,11 @@ msgid ""
 msgstr ""
 "Project-Id-Version: batterywatch\n"
 "Report-Msgid-Bugs-To: https://github.com/itayavra/batterywatch\n"
-"POT-Creation-Date: 2026-05-20 00:49+0300\n"
+"POT-Creation-Date: 2026-05-25 12:19+0200\n"
 "PO-Revision-Date: 2026-05-18 17:22+2\n"
 "Last-Translator: TheDogORB <thedogorb@proton.me> \n"
 "Language-Team: \n"
-"Language: cs\n"
+"Language: Czech\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
@@ -162,12 +162,8 @@ msgid "OpenLinkHub Integration"
 msgstr "OpenLinkHub Integrace"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable: "
-msgstr "Povolit: "
-
-#: ../contents/ui/config/Modules.qml
-msgid "Enabled"
-msgstr "Povoleno"
+msgid "Enable"
+msgstr "Povolit"
 
 #: ../contents/ui/config/Modules.qml
 msgid "Port: "
@@ -178,10 +174,6 @@ msgid "OpenRazer Integration"
 msgstr "OpenRazer Integrace"
 
 #: ../contents/ui/config/Modules.qml
-msgid "Enable"
-msgstr "Povol"
-
-#: ../contents/ui/config/Modules.qml
 msgid "Polling interval"
 msgstr "Interval dotazování"
 
@@ -190,8 +182,28 @@ msgid "s"
 msgstr "s"
 
 #: ../contents/ui/config/Modules.qml
+msgid "Sets the interval for OpenRazer device state updates."
+msgstr "Nastaví interval aktualizací stavu OpenRazer zařízení."
+
+#: ../contents/ui/config/Modules.qml
 msgid "KDE Connect Integration"
 msgstr "KDE Connect Integrace"
+
+#: ../contents/ui/config/Modules.qml
+msgid "Sets the interval for KDE Connect device state updates."
+msgstr "Nastaví interval aktualizací stavu KDE Connect zařízení."
+
+#: ../contents/ui/config/Modules.qml
+msgid "HID Devices Integration"
+msgstr "Integrace HID zařízení"
+
+#: ../contents/ui/config/Modules.qml
+msgid ""
+"Sets the interval for re-checking HID devices when none are connected.\n"
+"When a device is active, it updates automatically."
+msgstr ""
+"Určuje interval kontroly HID zařízení, pokud žádné není připojeno.\n"
+"U aktivního zařízení probíhá aktualizace automaticky."
 
 #. i18n: %1 is the version number.
 #: ../contents/ui/main.qml
@@ -241,7 +253,7 @@ msgstr "Obnov"
 msgid "Refresh devices"
 msgstr "Obnov zařízení"
 
-#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
+#: ../contents/ui/main.qml ../contents/ui/providers/CompanionProvider.qml ../contents/ui/providers/HIDDevicesProvider.qml ../contents/ui/providers/OpenLinkHubProvider.qml
 msgid "Unknown Device"
 msgstr "Neznámé Zařízení"
 
@@ -397,3 +409,19 @@ msgstr "Neznámé Razer Zařízení"
 #: ../contents/ui/providers/UPowerProvider.qml
 msgid "BatteryWatch: Applying UPower device override for '%1': %2 -> %3"
 msgstr "BatteryWatch: Aplikuji přepis UPower zařízení pro '%1': %2 -> %3"
+
+#~ msgid "Steam Controller 2 Integration"
+#~ msgstr "Steam Controller 2 Integrace"
+
+#~ msgid ""
+#~ "Sets the interval for Steam Controller 2 state updates when idle or not connected.\n"
+#~ "When active, the controller updates automatically."
+#~ msgstr ""
+#~ "Nastaví interval aktualizací stavu Steam Controlleru 2, pokud je nečinný nebo nepřipojen.\n"
+#~ "Při aktivním používání se stav aktualizuje automaticky."
+
+#~ msgid "Enable: "
+#~ msgstr "Povolit: "
+
+#~ msgid "Enabled"
+#~ msgstr "Povoleno"

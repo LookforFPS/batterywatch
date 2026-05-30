@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""
+read_hid_devices - HID battery reader
+
+Author: TheDogORB <thedogorb@proton.me>
+"""
+
+import os
+import select
+import time
+
+from enum import Enum
+from typing import NamedTuple, Callable
+
+TIMEOUT_SEC = 10
+MAX_DEVICES = 8
+HID_BUFFER_SIZE = 64
+
+# Device types, based on DeviceUtils.js
+class DeviceType(Enum):
+    GAMEPAD     = "gamepad"
+    MOUSE       = "mouse"
+    KEYBOARD    = "keyboard"
+    HEADPHONES  = "audio-headphones"
+    HEADSET     = "audio-headset"
+
+# A helper class; the same device may show under different pids/ifaces hence this exists to mitigate multiple nearly identical device entries
+class DeviceVariant(NamedTuple):
+    pid:    int         # Product ID
+    iface:  int | None  # Interface
+
+# A helper class; holds where a specific data byte is stored: report/msg ID + data byte offset
+class DataPos(NamedTuple):
+    report_id:  int     # Report/msg ID e.g. 0x43
+    data_byte:  int     # Where a specific byte is located (offset); byte 0 is always report ID
+
+# Points to a location from where a connection state is read out
+# states holds a dict of possible states in which device can be, if not present defaults to charging = false
+# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state 
+class ChargingStates(NamedTuple):
+    pos:    DataPos         # Location of state ID byte
+    states: dict[int, bool] # ID -> charging True/False; missing ID defaults to False
+
+# Power read source
+# InputStream is being sent via a msg every few seconds (~3.5 for SC2)
+# This power scheme supports only devices which periodically send its battery state -> Steam Controller, DualShock etc.
+class InputStreamSchema(NamedTuple):
+    charge:             DataPos                         # Where to look for battery charge
+    charge_range:       tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
+    status:             DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
+
+# Main class
+# Represents a device, and holds all the important data used for reading it out
+class Device(NamedTuple):
+    name:           str                         # Device name e.g. "Steam Controller"
+    device_type:    DeviceType                  # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
+    vid:            int                         # Vendor ID
+    variants:       tuple[DeviceVariant, ...]   # VID, PID, iface used by device - used as path for where to look up device data
+    source:         InputStreamSchema           # How power is read, currently only InputStreamSchema exits
+    parse:          Callable | None             # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
+
+# List of known/supported devices
+# iface = None means that any interface contains battery data
+KNOWN_DEVICES = [
+    Device(
+        name="Steam Controller 2",
+        device_type=DeviceType.GAMEPAD,
+        vid=0x28DE,
+        variants=(
+            DeviceVariant(0x1302, 0),   #  28DE:1302 = USB direct
+                                        #  28DE:1303 = Bluetooth >>> HANDLED BY UPOWER MODULE <<<
+            DeviceVariant(0x1304, 2)    #  28DE:1304 = Wireless via puck dongle
+        ),
+        #  byte[0] = 0x43 (report ID), byte[1] = connection state, byte[2] = battery percentage
+        source = InputStreamSchema(
+            charge = DataPos(0x43, 2),
+            charge_range = None,
+            status = ChargingStates(
+                pos = DataPos(0x43, 1),
+                states = {
+                    0x01: False,    # Wireless
+                    0x02: True,     # Puck
+                    0x03: True,     # Transition in between charging->not charging and vice versa
+                    0x04: True,     # USB
+                }
+            )
+        ),
+        parse=None,
+    )
+]
+
+# Ptr to a location/device that has been found
+class FoundDevice(NamedTuple):
+    devpath: str
+    serial:  str
+    desc:    Device
+
+# Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
+def parse_uevent(path):
+    vid = 0
+    pid = 0
+    iface = -1
+    serial = "unknown-hid"
+    phys = ""
+
+    try:
+        with open(path, "r") as file:
+            for line in file:
+                line = line.rstrip("\r\n")
+                # Read out VID+PID
+                if line.startswith("HID_ID="):
+                    parts = line[7:].split(":")
+                    if len(parts) == 3:
+                        try:
+                            vid = int(parts[1], 16)
+                            pid = int(parts[2], 16)
+                        except ValueError:
+                            pass
+                # Read out physical device path + interface
+                elif line.startswith("HID_PHYS="):
+                    idx = line.find("/input")
+                    if idx >= 0:
+                        phys = line[9:idx]      # shared across a device's interfaces
+                        digits = ""
+                        for ch in line[idx + 6:]:
+                            if not ch.isdigit():
+                                break
+                            digits += ch
+                        iface = int(digits) if digits else -1
+                    else:
+                        phys = line[9:]
+                # Read out serial
+                elif line.startswith("HID_UNIQ="):
+                    val = line[9:]
+                    if val:
+                        serial = val
+    except OSError:
+        return None
+    return vid, pid, iface, serial, phys
+
+# Returns the matching Device for a given vid/pid/iface, or None
+def match_device(vid, pid, iface):
+    for dev in KNOWN_DEVICES:
+        if vid != dev.vid:
+            continue
+        for variant in dev.variants:
+            if pid != variant.pid:
+                continue
+            # iface = None in a variant means any interface contains batt data
+            if variant.iface is not None and iface != variant.iface:
+                continue
+            return dev
+    return None
+
+# Goes through /sys/class/hidraw* and collects all known interfaces
+def find_devices():
+    devices = []
+    seen = set()
+    try:
+        entries = os.listdir("/sys/class/hidraw")
+    except OSError:
+        return devices
+
+    for name in entries:
+        if len(devices) >= MAX_DEVICES:
+            break
+        if name.startswith("."):
+            continue
+
+        parsed = parse_uevent(f"/sys/class/hidraw/{name}/device/uevent")
+        if parsed is None:
+            continue
+        vid, pid, iface, serial, phys = parsed
+
+        desc = match_device(vid, pid, iface)
+        if desc is None:
+            continue
+
+        # One entry per physical device: iface=None matches every interface, so
+        # skip ones already taken (phys is shared across a device's interfaces)
+        key = (desc.name, phys or name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        devices.append(FoundDevice(f"/dev/{name}", serial, desc))
+    return devices
+
+# All DataPos referenced by a schema
+def schema_positions(schema):
+    yield schema.charge
+    st = schema.status
+    if isinstance(st, DataPos):
+        yield st
+    elif isinstance(st, ChargingStates):
+        yield st.pos
+
+# report_id -> minimum buffer length needed to read every field in that report
+def needed_reports(schema):
+    needed = {}
+    for pos in schema_positions(schema):
+        needed[pos.report_id] = max(needed.get(pos.report_id, 0), pos.data_byte + 1)
+    return needed
+
+# Generic interpreter: turns the collected report buffers into a status dict
+def interpret(schema, buffers):
+    raw = buffers[schema.charge.report_id][schema.charge.data_byte]
+    if schema.charge_range is None:
+        percentage = min(raw, 100)
+    else:
+        lo, hi = schema.charge_range
+        span = hi - lo
+        percentage = 0 if span <= 0 else max(0, min(100, round((raw - lo) * 100 / span)))
+
+    charging = False
+    st = schema.status
+    if isinstance(st, DataPos):
+        charging = bool(buffers[st.report_id][st.data_byte])
+    elif isinstance(st, ChargingStates):
+        state = buffers[st.pos.report_id][st.pos.data_byte]
+        charging = st.states.get(state, False)
+
+    return {"percentage": percentage, "charging": charging}
+
+
+# Reads a device's power status: waits for the report(s) the schema needs or for the
+# TIMEOUT_SEC deadline. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
+# utilisation. Returns status dict {"percentage", "charging"} or None.
+def read_status(dev):
+    schema = dev.desc.source
+    needed = needed_reports(schema)
+
+    try:
+        fd = os.open(dev.devpath, os.O_RDONLY | os.O_NONBLOCK)
+    except OSError:
+        return None
+
+    try:
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        deadline = time.monotonic() + TIMEOUT_SEC
+        buffers = {}
+
+        while True:
+            timeout_ms = int((deadline - time.monotonic()) * 1000)
+            if timeout_ms <= 0:
+                return None
+
+            events = poller.poll(timeout_ms)
+            if not events:
+                return None
+
+            _, revents = events[0]
+            # POLLERR/POLLHUP/POLLNVAL = device error / disconnected / invalid FD
+            if revents & (select.POLLERR | select.POLLHUP | select.POLLNVAL):
+                return None
+            if not (revents & select.POLLIN):
+                return None
+
+            try:
+                buf = os.read(fd, HID_BUFFER_SIZE)
+            except OSError:
+                return None
+            if not buf:
+                continue
+
+            report_id = buf[0]
+            if report_id not in needed or len(buf) < needed[report_id]:
+                continue
+
+            buffers[report_id] = buf
+            # interpret every report of a schema
+            # parse(), if set, sees only such report, so every byte needs to be declared via charge/status positions
+            if all(r in buffers for r in needed):
+                if dev.desc.parse is not None:
+                    return dev.desc.parse(buffers)
+                return interpret(schema, buffers)
+    finally:
+        os.close(fd)
+
+# Minimal JSON string escape, so " and \ don't break the struct
+def jstr(s):
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+def main():
+    parts = []
+    for dev in find_devices():
+        status = read_status(dev)
+        if status is None:
+            continue
+        parts.append(
+            '{"name":"%s","serial":"%s","percentage":%d,"charging":%s,"deviceType":"%s"}' % (
+                jstr(dev.desc.name),
+                jstr(dev.serial),
+                status["percentage"],
+                "true" if status["charging"] else "false",
+                jstr(dev.desc.device_type.value),
+            )
+        )
+    print("[" + ",".join(parts) + "]")
+
+if __name__ == "__main__":
+    main()

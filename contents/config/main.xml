@@ -130,4 +130,13 @@
       <default>5</default>
     </entry>
   </group>
+
+  <group name="HID">
+    <entry name="enableHIDIntegration" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="hidPollingTime" type="Int">
+      <default>5</default>
+    </entry>
+  </group>
 </kcfg>
