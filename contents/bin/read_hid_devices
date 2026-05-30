@@ -240,6 +240,35 @@ def interpret(schema, buffers):
     return {"percentage": percentage, "charging": charging}
 
 
+def _udev_hint(dev, mode):
+    print(
+        f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
+        f"  Fix: create /etc/udev/rules.d/70-batterywatch-hid.rules with:\n"
+        f'  SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{dev.desc.vid:04x}", MODE="{mode}", TAG+="uaccess"\n'
+        f"  Then run: sudo udevadm control --reload-rules && sudo udevadm trigger",
+        file=sys.stderr
+    )
+
+# Opens a hidraw device, sends init_request if needed. Returns fd or None.
+def open_device(dev, schema):
+    needs_write = schema.init_request is not None
+    flags = os.O_RDWR if needs_write else os.O_RDONLY
+    try:
+        fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
+    except OSError:
+        mode = "0660" if needs_write else "0440"
+        _udev_hint(dev, mode)
+        return None
+
+    if needs_write:
+        try:
+            os.write(fd, schema.init_request)
+        except OSError:
+            os.close(fd)
+            return None
+
+    return fd
+
 # Reads a device's power status: waits for the report(s) the schema needs or for the
 # TIMEOUT_SEC deadline. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
 # utilisation. Returns status dict {"percentage", "charging"} or None.
@@ -247,25 +276,9 @@ def read_status(dev):
     schema = dev.desc.source
     needed = needed_reports(schema)
 
-    rdwr = True
-    try:
-        fd = os.open(dev.devpath, os.O_RDWR | os.O_NONBLOCK)
-    except OSError:
-        rdwr = False
-        try:
-            fd = os.open(dev.devpath, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError:
-            return None
-
-    if schema.init_request is not None:
-        if not rdwr:
-            print(f"batterywatch: {dev.desc.name}: no write permission on {dev.devpath} — battery unavailable. Add a udev rule for idVendor={dev.desc.vid:#06x}", file=sys.stderr)
-            os.close(fd)
-            return None
-        try:
-            os.write(fd, schema.init_request)
-        except OSError:
-            return None
+    fd = open_device(dev, schema)
+    if fd is None:
+        return None
 
     try:
         poller = select.poll()
