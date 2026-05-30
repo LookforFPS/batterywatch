@@ -7,6 +7,7 @@ Author: TheDogORB <thedogorb@proton.me>
 
 import os
 import select
+import sys
 import time
 
 from enum import Enum
@@ -48,6 +49,7 @@ class InputStreamSchema(NamedTuple):
     charge:             DataPos                         # Where to look for battery charge
     charge_range:       tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
     status:             DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
+    init_request:       bytes | None = None             # Optional request packet to send before reading
 
 # Main class
 # Represents a device, and holds all the important data used for reading it out
@@ -62,6 +64,21 @@ class Device(NamedTuple):
 # List of known/supported devices
 # iface = None means that any interface contains battery data
 KNOWN_DEVICES = [
+    Device(
+        name="Keychron M5",
+        device_type=DeviceType.MOUSE,
+        vid=0x3434,
+        variants=(
+            DeviceVariant(0xd028, None),
+        ),
+        source = InputStreamSchema(
+            charge = DataPos(0xb3, 20),
+            charge_range = None,
+            status = None,
+            init_request = bytes.fromhex('b306') + b'\x00' * 62
+        ),
+        parse=None,
+    ),
     Device(
         name="Steam Controller 2",
         device_type=DeviceType.GAMEPAD,
@@ -230,10 +247,25 @@ def read_status(dev):
     schema = dev.desc.source
     needed = needed_reports(schema)
 
+    rdwr = True
     try:
-        fd = os.open(dev.devpath, os.O_RDONLY | os.O_NONBLOCK)
+        fd = os.open(dev.devpath, os.O_RDWR | os.O_NONBLOCK)
     except OSError:
-        return None
+        rdwr = False
+        try:
+            fd = os.open(dev.devpath, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return None
+
+    if schema.init_request is not None:
+        if not rdwr:
+            print(f"batterywatch: {dev.desc.name}: no write permission on {dev.devpath} — battery unavailable. Add a udev rule for idVendor={dev.desc.vid:#06x}", file=sys.stderr)
+            os.close(fd)
+            return None
+        try:
+            os.write(fd, schema.init_request)
+        except OSError:
+            return None
 
     try:
         poller = select.poll()
