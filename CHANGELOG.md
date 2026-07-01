@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-01
+
+### Added
+- **Steam Controller 2 support** — new HID-based provider for the Steam Controller 2; uses a Python helper script to read battery data directly from hidraw (contributed by @valeflare)
+- **Charging indicators** — devices now show a charging icon/indicator in both the popup and the tray
+- **Configurable tray icon gap** — new setting to adjust the spacing between tray icons
+- **Informational tooltip buttons** added to settings sections where they were missing
+- **Czech translation** (by @valeflare)
+- **Russian translation** (by @d-devy)
+
+### Changed
+- HID reader generalised and abstracted; renamed from `read_hid_sc2` to `read_hid_devices` to support multiple device types
+- Text box widths changed from static to dynamic sizing
+- Translations updated for Hungarian, Dutch, Polish (AI-assisted)
+
+### Fixed
+- Charging indicator font styling and spacing/tooltip consistency
+- Charging tray icon on vertical panels
+- KDE Connect provider no longer fails when `qdbus` is unavailable
+- Fixed charging indicator for UPower devices
+
+### Contributors
+- @valeflare — Steam Controller 2 provider, HID generalisation, Czech translation
+- @d-devy — Russian translation
+
+
 ## [0.3.0] - 2026-05-16
 
 ### Added
@@ -57,7 +83,8 @@
 
 Initial development releases (v0.1.0 – v0.1.9, through 2026-01-03). Core functionality: monitor battery levels of Bluetooth and wireless devices via UPower, with OpenLinkHub and BatteryWatch Companion integration.
 
-[Unreleased]: https://github.com/itayavra/batterywatch/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/itayavra/batterywatch/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/itayavra/batterywatch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/itayavra/batterywatch/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/itayavra/batterywatch/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/itayavra/batterywatch/compare/v0.2.0...v0.2.1
