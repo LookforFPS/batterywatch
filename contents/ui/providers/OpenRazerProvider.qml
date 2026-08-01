@@ -12,7 +12,7 @@ Item {
     visible: false
 
     // Helper getDevices var
-    readonly property string getDeviceListCmd: "qdbus org.razer /org/razer razer.devices.getDevices"
+    readonly property string getDeviceListCmd: "gdbus call --session --dest org.razer --object-path /org/razer --method razer.devices.getDevices"
 
     // Can't test this as I don't have means to connect mouse to PC via Bluetooth
     // but based on what I found on the openrazer github, Bluetooth is currently
@@ -77,7 +77,12 @@ Item {
             if (typeof d.battery !== "number") {
                 continue;
             }
-            if (d.firmware === undefined || d.firmware === "v0.0") {
+            // Only filter on an *explicit* "v0.0" response from OpenRazer, which
+            // signals the wireless device is powered off (dongle still plugged in).
+            // Do NOT filter when firmware is still undefined/unknown: getFirmware
+            // can fail or be slow (e.g. on some wireless devices like the
+            // DeathAdder V3 Pro), and in that case the device should still appear.
+            if (d.firmware === "v0.0") {
                 continue;
             }
             result.push({
@@ -119,16 +124,16 @@ Item {
     }
 
     function fetchNameAndType(id) {
-        detailsSource.connectSource(`qdbus org.razer /org/razer/device/${id} razer.device.misc.getDeviceName`);
-        detailsSource.connectSource(`qdbus org.razer /org/razer/device/${id} razer.device.misc.getDeviceType`);
+        detailsSource.connectSource(`gdbus call --session --dest org.razer --object-path /org/razer/device/${id} --method razer.device.misc.getDeviceName`);
+        detailsSource.connectSource(`gdbus call --session --dest org.razer --object-path /org/razer/device/${id} --method razer.device.misc.getDeviceType`);
     }
 
     function fetchPowerInfo(id) {
         if (!deviceData[id])
             return;
-        batterySource.connectSource(`qdbus org.razer /org/razer/device/${id} razer.device.power.getBattery`);
-        chargingSource.connectSource(`qdbus org.razer /org/razer/device/${id} razer.device.power.isCharging`);
-        detailsSource.connectSource(`qdbus org.razer /org/razer/device/${id} razer.device.misc.getFirmware`);
+        batterySource.connectSource(`gdbus call --session --dest org.razer --object-path /org/razer/device/${id} --method razer.device.power.getBattery`);
+        chargingSource.connectSource(`gdbus call --session --dest org.razer --object-path /org/razer/device/${id} --method razer.device.power.isCharging`);
+        detailsSource.connectSource(`gdbus call --session --dest org.razer --object-path /org/razer/device/${id} --method razer.device.misc.getFirmware`);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -147,7 +152,12 @@ Item {
         onNewData: (src, data) => {
             disconnectSource(src);
 
-            const ids = data.stdout.split("\n").map(s => s.trim()).filter(Boolean);
+            let ids = [];
+            if (data.stdout && data.stdout.trim() !== "()") {
+                // gdbus outputs strings as (['serial1', 'serial2'],)
+                const matches = data.stdout.match(/['"]([^'"]+)['"]/g) || [];
+                ids = matches.map(s => s.replace(/['"]/g, ''));
+            }
 
             let current = {};
 
@@ -213,7 +223,9 @@ Item {
             }
 
             // 0 is handled in updateOpenRazerDevices()
-            const raw = parseFloat(data.stdout);
+            // gdbus outputs numbers as (51,) or (uint32 51,)
+            const match = data.stdout.match(/([\d.]+)[^\d]*\)$/);
+            const raw = match ? parseFloat(match[1]) : NaN;
             if (isNaN(raw))
                 return;
             root.deviceData[id].battery = Math.round(Math.max(0, Math.min(100, raw)));
@@ -243,7 +255,8 @@ Item {
 
             if (data.stderr && data.stderr.length > 0)
                 return;
-            root.deviceData[id].charging = data.stdout.trim() === "true";
+            // gdbus outputs boolean as (true,) or (false,)
+            root.deviceData[id].charging = data.stdout.includes("true");
 
             Qt.callLater(root.updateOpenRazerDevices);
         }
@@ -272,12 +285,26 @@ Item {
             if (data.stderr && data.stderr.length > 0) {
                 return;
             }
+
+            let fw = data.stdout.trim();
+            // gdbus outputs strings surrounded by (' and ',)
+            if (fw.startsWith("('") && fw.endsWith("',)")) {
+                fw = fw.substring(2, fw.length - 3);
+            } else if (fw.startsWith('("') && fw.endsWith('",)')) {
+                fw = fw.substring(2, fw.length - 3);
+            }
+
             if (src.endsWith("getDeviceName")) {
-                root.deviceData[id].name = data.stdout.trim();
+                root.deviceData[id].name = fw;
             } else if (src.endsWith("getDeviceType")) {
-                root.deviceData[id].type = data.stdout.trim();
+                root.deviceData[id].type = fw;
             } else if (src.endsWith("getFirmware")) {
-                root.deviceData[id].firmware = data.stdout.trim();
+                // Only store a non-empty firmware string; keep existing value
+                // (or undefined) if the response is blank so that we don't
+                // accidentally overwrite a previously-valid reading with empty.
+                if (fw.length > 0) {
+                    root.deviceData[id].firmware = fw;
+                }
             }
 
             Qt.callLater(root.updateOpenRazerDevices);
