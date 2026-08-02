@@ -8,6 +8,7 @@ Author: TheDogORB <thedogorb@proton.me>
 import json
 import os
 import select
+import subprocess
 import sys
 import time
 
@@ -96,13 +97,6 @@ class Device(NamedTuple):
     source:         InputStreamSchema | RequestSchema    # How power is read
     parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
 
-# Keychron M5: byte 20 of the 0xB4 reply is 0-100 when discharging and goes
-# above 100 while charging (raw = 100 + level). Percentage is the clamped value,
-# charging is derived from the raw byte.
-def keychron_m5_parse(buffers):
-    raw = buffers[0xB4][20]
-    return {"percentage": min(raw, 100), "charging": raw > 100}
-
 # List of known/supported devices
 # iface = None means that any interface contains battery data
 KNOWN_DEVICES = [
@@ -125,7 +119,16 @@ KNOWN_DEVICES = [
             timeout  = REQUEST_TIMEOUT_SEC,
             cooldown = REQUEST_COOLDOWN_SEC,
         ),
-        parse=keychron_m5_parse,
+        # Keychron M5: byte 20 of the 0xB4 reply is the level (0-100) when
+        # discharging and "128 + level" while charging (the 0x80 flag bit is
+        # set), so charging level = raw - 128; the 0x87/0x89 bytes seen on real
+        # devices decode to 7%/9%, consistent with the 6% discharge observed
+        # just before.
+        parse=lambda buffers: (
+            {"percentage": max(0, min(buffers[0xB4][20] - 128, 100)), "charging": True}
+            if buffers[0xB4][20] > 100
+            else {"percentage": buffers[0xB4][20], "charging": False}
+        ),
     ),
     Device(
         name="Steam Controller 2",
@@ -159,6 +162,7 @@ class FoundDevice(NamedTuple):
     devpath: str
     serial:  str
     desc:    Device
+    pid:     int       # Product ID that actually matched (from sysfs)
 
 # Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
 def parse_uevent(path):
@@ -253,7 +257,7 @@ def find_devices():
         if serial == "unknown-hid":
             serial = phys or name
 
-        devices.append(FoundDevice(f"/dev/{name}", serial, desc))
+        devices.append(FoundDevice(f"/dev/{name}", serial, desc, pid))
     return devices
 
 # All DataPos referenced by a schema
@@ -293,7 +297,7 @@ def interpret(schema, buffers):
     return {"percentage": percentage, "charging": charging}
 
 
-def _udev_hint(dev, mode):
+def _udev_hint(dev):
     # Use a tmpfile sentinel so we only print once per device, not every poll cycle
     sentinel = f"/tmp/.bw_hint_{os.path.basename(dev.devpath)}"
     if os.path.exists(sentinel):
@@ -304,11 +308,26 @@ def _udev_hint(dev, mode):
         pass
     print(
         f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
-        f"  Fix: create /etc/udev/rules.d/70-batterywatch-hid.rules with:\n"
-        f'  SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{dev.desc.vid:04x}", MODE="{mode}", TAG+="uaccess", TAG+="udev-acl"\n'
-        f"  Then run: sudo udevadm control --reload-rules && sudo udevadm trigger",
+        f"  Fix in the widget: open the popup, click the copy button on the device,\n"
+        f"  then paste the command below in a terminal to grant access.\n"
+        f"  {udev_unblock_command(dev.desc.vid, dev.pid)}",
         file=sys.stderr
     )
+
+# True when the device is present but its hidraw node can't be opened for the
+# access level the schema needs (missing udev rule). Asleep devices *can* be
+# opened, so this only fires for a genuine permissions problem.
+def is_blocked(dev):
+    needs_write = isinstance(dev.desc.source, RequestSchema)
+    flags = os.O_RDWR if needs_write else os.O_RDONLY
+    try:
+        fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
+        os.close(fd)
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
 
 # Opens a hidraw device, sends request packet if schema requires it. Returns fd or None.
 def open_device(dev, schema):
@@ -317,8 +336,7 @@ def open_device(dev, schema):
     try:
         fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
     except OSError:
-        mode = "0660" if needs_write else "0440"
-        _udev_hint(dev, mode)
+        _udev_hint(dev)
         return None
 
     if needs_write:
@@ -431,25 +449,98 @@ def read_status(dev):
             return old
     return status
 
-# Minimal JSON string escape, so " and \ don't break the struct
+# Minimal JSON string escape, so ", \ and newlines don't break the struct
 def jstr(s):
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        s.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\n", "\\n")
+        .replace("\r", "\\r")
+    )
+
+# ── Per-device udev rule command ────────────────────────────────────────────
+# Each authorized device gets its own rule file, so the file is wholly ours and
+# can be removed with a plain `rm` (no risk of clobbering user-written rules,
+# no merge bookkeeping). The helper never installs rules itself: it emits the
+# exact terminal command on the blocked device's JSON as "unblock_command", and
+# the user runs it on their own terms (no pkexec involved).
+
+UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the widget\'s "Copy command" button.'
+
+def udev_rule_path(vid, pid):
+    return f"/etc/udev/rules.d/70-batterywatch-hid-{vid:04x}-{pid:04x}.rules"
+
+# Write access needed (RequestSchema sends a packet) vs. read-only stream
+def _udev_mode_for(vid, pid):
+    for dev in KNOWN_DEVICES:
+        if vid != dev.vid:
+            continue
+        for variant in dev.variants:
+            if pid == variant.pid:
+                return "0660" if isinstance(dev.source, RequestSchema) else "0440"
+    return "0660"
+
+def udev_rule_for(vid, pid):
+    return (
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'ATTRS{{idProduct}}=="{pid:04x}", '
+        f'MODE="{_udev_mode_for(vid, pid)}", TAG+="uaccess", TAG+="udev-acl"'
+    )
+
+# True when the udev rule for vid:pid is already installed
+def _rule_exists(vid, pid):
+    return os.path.exists(udev_rule_path(vid, pid))
+
+# The exact shell command a user can paste to authorize this one device. A
+# single `sudo tee` heredoc, so it's readable and touches only that device's file.
+def udev_unblock_command(vid, pid):
+    path = udev_rule_path(vid, pid)
+    return (
+        f"sudo tee {path} >/dev/null <<'EOF'\n"
+        f"{UDEV_HEADER}\n"
+        f"{udev_rule_for(vid, pid)}\n"
+        f"EOF\n"
+        f"sudo udevadm control --reload-rules && sudo udevadm trigger"
+    )
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--simulate":
+        # Testing mode (no hardware): emits a fake Keychron M5 that looks
+        # blocked until its udev rule exists, then reports a battery.
+        vid, pid = 0x3434, 0xD028
+        if _rule_exists(vid, pid):
+            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","percentage":88,"charging":false,"deviceType":"mouse"}]')
+        else:
+            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","blocked":true,"vid":"3434","pid":"d028","unblock_command":"%s","deviceType":"mouse"}]' % jstr(udev_unblock_command(vid, pid)))
+        sys.exit(0)
+
     parts = []
     for dev in find_devices():
         status = read_status(dev)
-        if status is None:
-            continue
-        parts.append(
-            '{"name":"%s","serial":"%s","percentage":%d,"charging":%s,"deviceType":"%s"}' % (
-                jstr(dev.desc.name),
-                jstr(dev.serial),
-                status["percentage"],
-                "true" if status["charging"] else "false",
-                jstr(dev.desc.device_type.value),
+        if status is not None:
+            parts.append(
+                '{"name":"%s","serial":"%s","percentage":%d,"charging":%s,"deviceType":"%s"}' % (
+                    jstr(dev.desc.name),
+                    jstr(dev.serial),
+                    status["percentage"],
+                    "true" if status["charging"] else "false",
+                    jstr(dev.desc.device_type.value),
+                )
             )
-        )
+        elif is_blocked(dev):
+            # Present but no permission to open: report it so the widget can
+            # offer to copy the udev command for this one device.
+            # "unblock_command" is the exact terminal command for this one device.
+            parts.append(
+                '{"name":"%s","serial":"%s","blocked":true,"vid":"%04x","pid":"%04x","unblock_command":"%s","deviceType":"%s"}' % (
+                    jstr(dev.desc.name),
+                    jstr(dev.serial),
+                    dev.desc.vid,
+                    dev.pid,
+                    jstr(udev_unblock_command(dev.desc.vid, dev.pid)),
+                    jstr(dev.desc.device_type.value),
+                )
+            )
     print("[" + ",".join(parts) + "]")
 
 if __name__ == "__main__":

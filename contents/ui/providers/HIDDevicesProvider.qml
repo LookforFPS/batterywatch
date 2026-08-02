@@ -8,7 +8,8 @@ import "../DeviceUtils.js" as DeviceUtils
 // Author: TheDogORB <thedogorb@proton.me>
 //
 // Uses a small Python helper (bin/read_hid_devices) that matches known devices and returns JSON
-// Requires access to /dev/hidraw*; should be granted by default via Steam udev rules.
+// Requires access to /dev/hidraw*; devices found but not readable are reported
+// as blocked so the widget can offer to copy the exact udev command for them.
 Item {
     id: root
     visible: false
@@ -28,6 +29,17 @@ Item {
 
     property bool hidEnabled: Plasmoid.configuration.enableHIDIntegration
 
+    // Testing mode (reuses the "Debug mode" toggle in Advanced Settings):
+    // no hardware needed, helper emits a fake device instead. With --simulate
+    // the helper mirrors real behavior - it looks blocked until its udev rule
+    // exists, then reports a battery.
+    property bool debugMode: Plasmoid.configuration.debugMode
+
+    onDebugModeChanged: {
+        if (hidEnabled)
+            refresh()
+    }
+
     onHidEnabledChanged: {
         if (!hidEnabled) {
             devices = []
@@ -45,7 +57,7 @@ Item {
     // Refresh via "refresh" button in the GUI
     function refresh() {
         pollSource.disconnectSource(helperPath)
-        pollSource.connectSource(helperPath)
+        pollSource.connectSource(debugMode ? helperPath + " --simulate" : helperPath)
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -60,12 +72,16 @@ Item {
 
         // Parses data, number check is redundand but better to be safe than sorry
         const result = parsed
-            .filter(d => typeof d.percentage === "number")
+            .filter(d => typeof d.percentage === "number" || d.blocked === true)
             .map(d => ({
                 name: d.name || i18n("Unknown Device"),
                 serial: d.serial || d.name,
                 percentage: d.percentage,
                 charging: d.charging === true,
+                blocked: d.blocked === true,
+                vid: d.vid,
+                pid: d.pid,
+                unblockCommand: d.unblock_command,
                 type: d.deviceType,
                 icon: DeviceUtils.getIconForType(d.deviceType),
                 connectionType: (typeof d.connectionType === "number") ? d.connectionType : wirelessType,

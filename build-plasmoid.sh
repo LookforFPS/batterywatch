@@ -23,7 +23,8 @@ zip -r "$OUTPUT_DIR/$PLASMOID_NAME" . \
     -x "dev-restart-plasma.sh" \
     -x "dist/*" \
     -x ".git/*" \
-    -x ".gitignore"
+    -x ".gitignore" \
+    -x ".future-tasks/*"
 
 if [ $? -eq 0 ]; then
     echo "Successfully created: $OUTPUT_DIR/$PLASMOID_NAME"

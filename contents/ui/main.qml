@@ -43,7 +43,9 @@ PlasmoidItem {
 
     // Debug mode
     property bool debugMode: Plasmoid.configuration.debugMode
-    property var allDevices: debugMode ? testDevices : realDevices
+    // Debug mode: show the static test devices AND real provider devices
+    // (the HID provider simulates a blocked device when debug is on)
+    property var allDevices: debugMode ? testDevices.concat(realDevices) : realDevices
 
     // ═══════════════════════════════════════════════════════════════════════
     // DEVICE STATE
@@ -71,11 +73,46 @@ PlasmoidItem {
     // For multi-battery devices, only shows batteries with showInTray=true
     property var trayItems: buildTrayItems(allDevices, hiddenDevices)
 
+    // The exact command for this blocked device, from the helper (single source
+    // of truth). The widget never installs anything itself - the user runs this
+    // on their own terms, so there is no root authorization from the widget.
+    function unblockCommandFor(device) {
+        return device.unblockCommand || "";
+    }
+
+    function copyUnblockCommand(device) {
+        copyBuffer.text = unblockCommandFor(device)
+        copyBuffer.selectAll()
+        copyBuffer.copy()
+        root.commandCopied = true
+        copyFeedbackTimer.restart()
+    }
+
+    // Invisible buffer so copy works in any QML runtime (plasmashell,
+    // plasmoidviewer, ...) without relying on a clipboard context property.
+    TextEdit {
+        id: copyBuffer
+        visible: false
+    }
+
+    // Brief "Copied" feedback on the copy button
+    property bool commandCopied: false
+    Timer {
+        id: copyFeedbackTimer
+        interval: 2000
+        onTriggered: root.commandCopied = false
+    }
+
     function buildTrayItems(devices, hidden) {
         var items = [];
         for (var i = 0; i < devices.length; i++) {
             var device = devices[i];
             if (hidden.indexOf(device.serial) !== -1)
+                continue;
+
+            // Devices whose battery needs a permission we don't have yet: keep
+            // them out of the tray; the popup shows the copy-command action.
+            if (device.blocked === true)
                 continue;
 
             // Multi-battery device (e.g., AirPods)
@@ -420,7 +457,7 @@ PlasmoidItem {
 
                             Item {
                                 Layout.fillWidth: true
-                                Layout.preferredHeight: Kirigami.Units.gridUnit * 4
+                                Layout.preferredHeight: device.blocked === true ? Kirigami.Units.gridUnit * 5 : Kirigami.Units.gridUnit * 4
                                 Layout.topMargin: Kirigami.Units.smallSpacing
                                 Layout.bottomMargin: Kirigami.Units.smallSpacing
 
@@ -440,19 +477,35 @@ PlasmoidItem {
                                         Layout.alignment: Qt.AlignVCenter
                                         spacing: 2
 
-                                        PlasmaComponents.Label {
-                                            text: device.name || i18n("Unknown Device")
-                                            font.bold: true
+                                        RowLayout {
                                             Layout.fillWidth: true
-                                            elide: Text.ElideRight
+                                            spacing: Kirigami.Units.smallSpacing
+
+                                            Kirigami.Icon {
+                                                visible: device.blocked === true
+                                                source: "object-locked"
+                                                Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                                                Layout.preferredHeight: Kirigami.Units.iconSizes.small
+                                                Layout.alignment: Qt.AlignVCenter
+                                            }
+
+                                            PlasmaComponents.Label {
+                                                text: device.name || i18n("Unknown Device")
+                                                font.bold: true
+                                                Layout.fillWidth: true
+                                                elide: Text.ElideRight
+                                            }
                                         }
 
                                         PlasmaComponents.Label {
-                                            text: device.serial
+                                            text: device.blocked === true
+                                                ? i18n("Needs a udev rule — copy the command and run it in a terminal")
+                                                : device.serial
                                             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
-                                            color: Kirigami.Theme.disabledTextColor
+                                            color: device.blocked === true ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.disabledTextColor
                                             Layout.fillWidth: true
                                             elide: Text.ElideRight
+                                            wrapMode: device.blocked === true ? Text.WordWrap : Text.NoWrap
                                         }
 
                                         // Multi-battery row (shown under MAC address)
@@ -504,6 +557,7 @@ PlasmoidItem {
                                         }
 
                                         PlasmaComponents.ToolButton {
+                                            visible: device.blocked !== true
                                             icon.name: root.hiddenDevices.indexOf(device.serial) === -1 ? "view-visible" : "view-hidden"
                                             text: root.hiddenDevices.indexOf(device.serial) === -1 ? i18n("Hide") : i18n("Show")
                                             display: PlasmaComponents.AbstractButton.IconOnly
@@ -521,9 +575,27 @@ PlasmoidItem {
                                             }
                                         }
 
+                                        PlasmaComponents.ToolButton {
+                                            visible: device.blocked === true
+                                            icon.name: "edit-copy"
+                                            text: root.commandCopied ? i18n("Copied!") : i18n("Copy command")
+                                            onClicked: root.copyUnblockCommand(device)
+
+                                            PlasmaComponents.ToolTip {
+                                                text: root.commandCopied ? i18n("Copied to clipboard") : i18n("Copy the command to run in a terminal")
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                hoverEnabled: true
+                                                cursorShape: Qt.PointingHandCursor
+                                                onPressed: mouse.accepted = false
+                                            }
+                                        }
+
                                         // Single battery: show percentage
                                         PlasmaComponents.Label {
-                                            visible: !hasMultipleBatteries
+                                            visible: !hasMultipleBatteries && device.blocked !== true
                                             // i18n: %1 is the charge percentage value, %2 is an optional charging indicator suffix (e.g. " ⚡") or empty string. %% is a literal percent sign.
                                             text: i18n("%1%%2", device.percentage, device.charging ? " ⚡" : "")
                                             color: batteryColor(device.percentage, device.charging)
