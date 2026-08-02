@@ -5,6 +5,7 @@ read_hid_devices - HID battery reader
 Author: TheDogORB <thedogorb@proton.me>
 """
 
+import json
 import os
 import select
 import sys
@@ -16,6 +17,15 @@ from typing import NamedTuple, Callable
 TIMEOUT_SEC = 10
 MAX_DEVICES = 8
 HID_BUFFER_SIZE = 64
+
+# Request-response devices (e.g. Keychron M5) reply within milliseconds; don't
+# stall the widget for the full stream timeout, especially when the mouse sleeps.
+REQUEST_TIMEOUT_SEC = 1
+
+# Keychron mice sleep frequently and should be queried sparingly: cap the
+# physical query rate and serve cached readings in between. Mirrors the 5-minute
+# polling used by other working implementations.
+REQUEST_COOLDOWN_SEC = 300
 
 # Device types, based on DeviceUtils.js
 class DeviceType(Enum):
@@ -49,6 +59,13 @@ class InputStreamSchema(NamedTuple):
     charge:       DataPos                         # Where to look for battery charge
     charge_range: tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
     status:       DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
+    cooldown:     int = 0                         # Min seconds between physical reads; 0 = read every poll
+
+    def valid(self, buf) -> bool:
+        return True
+
+    def poll_timeout(self) -> float:
+        return TIMEOUT_SEC
 
 # Device responds to a request packet with a battery report (e.g. Keychron M5)
 class RequestSchema(NamedTuple):
@@ -56,6 +73,18 @@ class RequestSchema(NamedTuple):
     charge_range: tuple[int, int] | None
     status:       DataPos | ChargingStates | None
     request:      bytes                           # Packet to send before reading; device replies with battery report
+    timeout:      float = REQUEST_TIMEOUT_SEC     # Max wait for the reply; devices answer in milliseconds
+    cooldown:     int = 0                         # Min seconds between physical reads; 0 = read every poll
+
+    def valid(self, buf) -> bool:
+        # A real battery reply echoes the request's command byte, which tells it
+        # apart from unrelated reports on the same interface.
+        if len(self.request) < 2:
+            return True
+        return buf[0] == self.charge.report_id and buf[1] == self.request[1]
+
+    def poll_timeout(self) -> float:
+        return self.timeout
 
 # Main class
 # Represents a device, and holds all the important data used for reading it out
@@ -67,6 +96,13 @@ class Device(NamedTuple):
     source:         InputStreamSchema | RequestSchema    # How power is read
     parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
 
+# Keychron M5: byte 20 of the 0xB4 reply is 0-100 when discharging and goes
+# above 100 while charging (raw = 100 + level). Percentage is the clamped value,
+# charging is derived from the raw byte.
+def keychron_m5_parse(buffers):
+    raw = buffers[0xB4][20]
+    return {"percentage": min(raw, 100), "charging": raw > 100}
+
 # List of known/supported devices
 # iface = None means that any interface contains battery data
 KNOWN_DEVICES = [
@@ -75,15 +111,21 @@ KNOWN_DEVICES = [
         device_type=DeviceType.MOUSE,
         vid=0x3434,
         variants=(
-            DeviceVariant(0xd028, None),
+            DeviceVariant(0xd028, 4),   # Ultra-Link 8K receiver (wireless), battery on vendor interface 4
+            DeviceVariant(0xd048, 4),   # M5 wired over USB-C, same vendor interface 4
         ),
+        # Sending request 0xB3:06 makes the device reply with report 0xB4,
+        # command echo 0x06, battery % at byte 20 (per keychron-battery-dkms
+        # and StarPepe's raw reply). Interface 4 is the only one that answers.
         source = RequestSchema(
-            charge   = DataPos(0xb3, 20),
+            charge   = DataPos(0xb4, 20),
             charge_range = None,
             status   = None,
             request  = bytes.fromhex('b306') + b'\x00' * 62,
+            timeout  = REQUEST_TIMEOUT_SEC,
+            cooldown = REQUEST_COOLDOWN_SEC,
         ),
-        parse=None,
+        parse=keychron_m5_parse,
     ),
     Device(
         name="Steam Controller 2",
@@ -206,6 +248,11 @@ def find_devices():
             continue
         seen.add(key)
 
+        # Fall back to the physical path when the device reports no serial, so
+        # multiple identical dongles get distinct ids (and caches).
+        if serial == "unknown-hid":
+            serial = phys or name
+
         devices.append(FoundDevice(f"/dev/{name}", serial, desc))
     return devices
 
@@ -258,7 +305,7 @@ def _udev_hint(dev, mode):
     print(
         f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
         f"  Fix: create /etc/udev/rules.d/70-batterywatch-hid.rules with:\n"
-        f'  SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{dev.desc.vid:04x}", MODE="{mode}", TAG+="uaccess"\n'
+        f'  SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{dev.desc.vid:04x}", MODE="{mode}", TAG+="uaccess", TAG+="udev-acl"\n'
         f"  Then run: sudo udevadm control --reload-rules && sudo udevadm trigger",
         file=sys.stderr
     )
@@ -283,10 +330,10 @@ def open_device(dev, schema):
 
     return fd
 
-# Reads a device's power status: waits for the report(s) the schema needs or for the
-# TIMEOUT_SEC deadline. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
+# Reads a device's power status: waits for the report(s) the schema needs or for
+# the schema's timeout. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
 # utilisation. Returns status dict {"percentage", "charging"} or None.
-def read_status(dev):
+def read_status_hw(dev):
     schema = dev.desc.source
     needed = needed_reports(schema)
 
@@ -297,7 +344,7 @@ def read_status(dev):
     try:
         poller = select.poll()
         poller.register(fd, select.POLLIN)
-        deadline = time.monotonic() + TIMEOUT_SEC
+        deadline = time.monotonic() + schema.poll_timeout()
         buffers = {}
 
         while True:
@@ -326,6 +373,8 @@ def read_status(dev):
             report_id = buf[0]
             if report_id not in needed or len(buf) < needed[report_id]:
                 continue
+            if not schema.valid(buf):
+                continue
 
             buffers[report_id] = buf
             # interpret every report of a schema
@@ -336,6 +385,51 @@ def read_status(dev):
                 return interpret(schema, buffers)
     finally:
         os.close(fd)
+
+# ── Per-device reading cache ────────────────────────────────────────────────
+# Request-response devices (e.g. Keychron mice) sleep a lot and are hammered by
+# the widget's back-to-back polling. The cache caps the physical query rate and
+# keeps a last known reading so a sleeping mouse doesn't make the widget
+# drop/re-add the device on every poll.
+
+def cache_path(dev):
+    key = "".join(c if c.isalnum() or c in "._-" else "_" for c in f"{dev.desc.name}-{dev.serial}")
+    return os.path.join("/tmp", f"batterywatch_{key}.json")
+
+def load_cache(dev):
+    try:
+        with open(cache_path(dev)) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+def save_cache(dev, status):
+    try:
+        with open(cache_path(dev), "w") as f:
+            json.dump({"ts": time.time(), "status": status}, f)
+    except OSError:
+        pass
+
+# Serves cached readings and throttles hardware access; drops the device only
+# when it disappears (read fails and no prior reading exists).
+def read_status(dev):
+    schema = dev.desc.source
+    if schema.cooldown:
+        cached = load_cache(dev)
+        if cached is not None and time.time() - cached["ts"] < schema.cooldown:
+            if cached["status"] is not None:
+                return cached["status"]
+            return None
+
+    status = read_status_hw(dev)
+    if schema.cooldown:
+        old = cached["status"] if cached is not None else None
+        save_cache(dev, status if status is not None else old)
+        # The device node still exists but didn't answer (mouse asleep): keep
+        # serving the last reading instead of dropping the device.
+        if status is None:
+            return old
+    return status
 
 # Minimal JSON string escape, so " and \ don't break the struct
 def jstr(s):
