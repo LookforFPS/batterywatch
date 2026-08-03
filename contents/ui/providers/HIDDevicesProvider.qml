@@ -133,7 +133,7 @@ Item {
 
             try {
                 const parsed = JSON.parse(data.stdout.trim())
-                if (!Array.isArray(parsed) || parsed.length === 0) {
+                if (!Array.isArray(parsed)) {
                     if (root.devices.length > 0)
                         root.devices = []
                     retryTimer.restart()
@@ -141,13 +141,11 @@ Item {
                 }
                 root.pendingData = parsed
                 Qt.callLater(root.updateDevices)
-                // Reschedules immiedately, hidraw gets updated every ~3-5s
-                Qt.callLater(root.refresh)
             } catch (e) {
                 console.warn("BatteryWatch HID: Failed to parse helper output:", e)
                 root.devices = []
-                retryTimer.restart()
             }
+            retryTimer.restart()
         }
 
         Component.onCompleted: {
@@ -157,11 +155,13 @@ Item {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // TIMERS
+    // POLLING TIMER
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Polling timer, used only when no device is present; active devices reschedule via Qt.callLater
-    // Watcher using inotify would be less demanding but would required dependency
+    // Polls on a fixed interval (hidPollingTime, default 5s) whether devices
+    // are present or not. The helper is stateless and re-reads every device on
+    // each run, so a device that stops answering simply isn't reported and the
+    // widget drops it on the next poll - no state to keep in sync.
     Timer {
         id: retryTimer
         interval: Plasmoid.configuration.hidPollingTime * 1000

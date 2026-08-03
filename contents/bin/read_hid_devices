@@ -23,11 +23,6 @@ HID_BUFFER_SIZE = 64
 # stall the widget for the full stream timeout, especially when the mouse sleeps.
 REQUEST_TIMEOUT_SEC = 1
 
-# Keychron mice sleep frequently and should be queried sparingly: cap the
-# physical query rate and serve cached readings in between. Mirrors the 5-minute
-# polling used by other working implementations.
-REQUEST_COOLDOWN_SEC = 300
-
 # Device types, based on DeviceUtils.js
 class DeviceType(Enum):
     GAMEPAD     = "gamepad"
@@ -60,7 +55,6 @@ class InputStreamSchema(NamedTuple):
     charge:       DataPos                         # Where to look for battery charge
     charge_range: tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
     status:       DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
-    cooldown:     int = 0                         # Min seconds between physical reads; 0 = read every poll
 
     def valid(self, buf) -> bool:
         return True
@@ -75,7 +69,6 @@ class RequestSchema(NamedTuple):
     status:       DataPos | ChargingStates | None
     request:      bytes                           # Packet to send before reading; device replies with battery report
     timeout:      float = REQUEST_TIMEOUT_SEC     # Max wait for the reply; devices answer in milliseconds
-    cooldown:     int = 0                         # Min seconds between physical reads; 0 = read every poll
 
     def valid(self, buf) -> bool:
         # A real battery reply echoes the request's command byte, which tells it
@@ -117,7 +110,6 @@ KNOWN_DEVICES = [
             status   = None,
             request  = bytes.fromhex('b306') + b'\x00' * 62,
             timeout  = REQUEST_TIMEOUT_SEC,
-            cooldown = REQUEST_COOLDOWN_SEC,
         ),
         # Keychron M5: byte 20 of the 0xB4 reply is the level (0-100) when
         # discharging and "128 + level" while charging (the 0x80 flag bit is
@@ -253,7 +245,7 @@ def find_devices():
         seen.add(key)
 
         # Fall back to the physical path when the device reports no serial, so
-        # multiple identical dongles get distinct ids (and caches).
+        # multiple identical dongles get distinct ids.
         if serial == "unknown-hid":
             serial = phys or name
 
@@ -310,7 +302,7 @@ def _udev_hint(dev):
         f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
         f"  Fix in the widget: open the popup, click the copy button on the device,\n"
         f"  then paste the command below in a terminal to grant access.\n"
-        f"  {udev_unblock_command(dev.desc.vid, dev.pid)}",
+        f"  {udev_unblock_command(dev.desc.vid)}",
         file=sys.stderr
     )
 
@@ -404,50 +396,11 @@ def read_status_hw(dev):
     finally:
         os.close(fd)
 
-# ── Per-device reading cache ────────────────────────────────────────────────
-# Request-response devices (e.g. Keychron mice) sleep a lot and are hammered by
-# the widget's back-to-back polling. The cache caps the physical query rate and
-# keeps a last known reading so a sleeping mouse doesn't make the widget
-# drop/re-add the device on every poll.
-
-def cache_path(dev):
-    key = "".join(c if c.isalnum() or c in "._-" else "_" for c in f"{dev.desc.name}-{dev.serial}")
-    return os.path.join("/tmp", f"batterywatch_{key}.json")
-
-def load_cache(dev):
-    try:
-        with open(cache_path(dev)) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
-
-def save_cache(dev, status):
-    try:
-        with open(cache_path(dev), "w") as f:
-            json.dump({"ts": time.time(), "status": status}, f)
-    except OSError:
-        pass
-
-# Serves cached readings and throttles hardware access; drops the device only
-# when it disappears (read fails and no prior reading exists).
+# Stateless per run: reports only a CURRENT reading. A device that doesn't
+# answer simply isn't emitted, so the widget drops it on the next poll - same
+# behaviour as the upower-based providers. No state is kept between runs.
 def read_status(dev):
-    schema = dev.desc.source
-    if schema.cooldown:
-        cached = load_cache(dev)
-        if cached is not None and time.time() - cached["ts"] < schema.cooldown:
-            if cached["status"] is not None:
-                return cached["status"]
-            return None
-
-    status = read_status_hw(dev)
-    if schema.cooldown:
-        old = cached["status"] if cached is not None else None
-        save_cache(dev, status if status is not None else old)
-        # The device node still exists but didn't answer (mouse asleep): keep
-        # serving the last reading instead of dropping the device.
-        if status is None:
-            return old
-    return status
+    return read_status_hw(dev)
 
 # Minimal JSON string escape, so ", \ and newlines don't break the struct
 def jstr(s):
@@ -459,46 +412,57 @@ def jstr(s):
     )
 
 # ── Per-device udev rule command ────────────────────────────────────────────
-# Each authorized device gets its own rule file, so the file is wholly ours and
-# can be removed with a plain `rm` (no risk of clobbering user-written rules,
-# no merge bookkeeping). The helper never installs rules itself: it emits the
-# exact terminal command on the blocked device's JSON as "unblock_command", and
-# the user runs it on their own terms (no pkexec involved).
+# Each known device (e.g. "Keychron M5") gets ONE rule file that covers ALL of
+# its connection variants (wireless dongle + wired USB), so granting permission
+# once fixes every way the same device can connect - which interface the battery
+# happens to be on is an implementation detail the user shouldn't care about.
+# The file is wholly ours and can be removed with a plain `rm` (no risk of
+# clobbering user-written rules, no merge bookkeeping). The helper never
+# installs rules itself: it emits the exact terminal command on the blocked
+# device's JSON as "unblock_command", and the user runs it on their own terms
+# (no pkexec involved).
 
 UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the widget\'s "Copy command" button.'
 
-def udev_rule_path(vid, pid):
-    return f"/etc/udev/rules.d/70-batterywatch-hid-{vid:04x}-{pid:04x}.rules"
+def udev_rule_path(vid):
+    return f"/etc/udev/rules.d/70-batterywatch-hid-{vid:04x}.rules"
 
 # Write access needed (RequestSchema sends a packet) vs. read-only stream
-def _udev_mode_for(vid, pid):
+def _udev_mode_for(vid):
     for dev in KNOWN_DEVICES:
-        if vid != dev.vid:
-            continue
-        for variant in dev.variants:
-            if pid == variant.pid:
-                return "0660" if isinstance(dev.source, RequestSchema) else "0440"
+        if vid == dev.vid:
+            return "0660" if isinstance(dev.source, RequestSchema) else "0440"
     return "0660"
 
-def udev_rule_for(vid, pid):
+# One udev rule line per connection variant of the device
+def udev_rule_for(vid):
+    lines = [
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'ATTRS{{idProduct}}=="{variant.pid:04x}", '
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
+        for dev in KNOWN_DEVICES if dev.vid == vid
+        for variant in dev.variants
+    ]
+    if lines:
+        return "\n".join(lines)
+    # Unknown device: a vid-wide rule still helps the owner track it down
     return (
         f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
-        f'ATTRS{{idProduct}}=="{pid:04x}", '
-        f'MODE="{_udev_mode_for(vid, pid)}", TAG+="uaccess", TAG+="udev-acl"'
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
     )
 
-# True when the udev rule for vid:pid is already installed
-def _rule_exists(vid, pid):
-    return os.path.exists(udev_rule_path(vid, pid))
+# True when the udev rule for this device (all its variants) is installed
+def _rule_exists(vid):
+    return os.path.exists(udev_rule_path(vid))
 
 # The exact shell command a user can paste to authorize this one device. A
 # single `sudo tee` heredoc, so it's readable and touches only that device's file.
-def udev_unblock_command(vid, pid):
-    path = udev_rule_path(vid, pid)
+def udev_unblock_command(vid):
+    path = udev_rule_path(vid)
     return (
         f"sudo tee {path} >/dev/null <<'EOF'\n"
         f"{UDEV_HEADER}\n"
-        f"{udev_rule_for(vid, pid)}\n"
+        f"{udev_rule_for(vid)}\n"
         f"EOF\n"
         f"sudo udevadm control --reload-rules && sudo udevadm trigger"
     )
@@ -508,10 +472,10 @@ def main():
         # Testing mode (no hardware): emits a fake Keychron M5 that looks
         # blocked until its udev rule exists, then reports a battery.
         vid, pid = 0x3434, 0xD028
-        if _rule_exists(vid, pid):
+        if _rule_exists(vid):
             print('[{"name":"Keychron M5","serial":"sim-keychron-m5","percentage":88,"charging":false,"deviceType":"mouse"}]')
         else:
-            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","blocked":true,"vid":"3434","pid":"d028","unblock_command":"%s","deviceType":"mouse"}]' % jstr(udev_unblock_command(vid, pid)))
+            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","blocked":true,"vid":"3434","pid":"d028","unblock_command":"%s","deviceType":"mouse"}]' % jstr(udev_unblock_command(vid)))
         sys.exit(0)
 
     parts = []
@@ -537,7 +501,7 @@ def main():
                     jstr(dev.serial),
                     dev.desc.vid,
                     dev.pid,
-                    jstr(udev_unblock_command(dev.desc.vid, dev.pid)),
+                    jstr(udev_unblock_command(dev.desc.vid)),
                     jstr(dev.desc.device_type.value),
                 )
             )

@@ -499,7 +499,7 @@ PlasmoidItem {
 
                                         PlasmaComponents.Label {
                                             text: device.blocked === true
-                                                ? i18n("Needs a udev rule — copy the command and run it in a terminal")
+                                                ? i18n("Permission needed - run the command in a terminal")
                                                 : device.serial
                                             font.pixelSize: Kirigami.Theme.smallFont.pixelSize
                                             color: device.blocked === true ? Kirigami.Theme.negativeTextColor : Kirigami.Theme.disabledTextColor
