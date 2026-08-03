@@ -200,8 +200,10 @@ PlasmoidItem {
                 continue;
             var line = device.name;
 
-            // Multi-battery display
-            if (device.batteries && device.batteries.length > 1) {
+            // Blocked devices have no percentage yet; note why instead
+            if (device.blocked === true) {
+                line = i18n("%1 - permission needed", line);
+            } else if (device.batteries && device.batteries.length > 1) {
                 var parts = [];
                 for (var j = 0; j < device.batteries.length; j++) {
                     var bat = device.batteries[j];
