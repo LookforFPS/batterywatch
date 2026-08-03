@@ -575,9 +575,10 @@ PlasmoidItem {
                                             }
                                         }
 
-                                        PlasmaComponents.ToolButton {
+                                        PlasmaComponents.Button {
                                             visible: device.blocked === true
-                                            icon.name: "edit-copy"
+                                            flat: true
+                                            icon.name: root.commandCopied ? "checkmark" : "edit-copy"
                                             text: root.commandCopied ? i18n("Copied!") : i18n("Copy command")
                                             onClicked: root.copyUnblockCommand(device)
 
