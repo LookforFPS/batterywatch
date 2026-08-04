@@ -17,6 +17,9 @@ mkdir -p "$OUTPUT_DIR"
 echo "Building $PLASMOID_NAME..."
 zip -r "$OUTPUT_DIR/$PLASMOID_NAME" . \
     -x "contents/screenshots/*" \
+    -x "contents/bin/tests/*" \
+    -x "*__pycache__/*" \
+    -x "*.pyc" \
     -x "build-plasmoid.sh" \
     -x "dev-install.sh" \
     -x "dev-uninstall.sh" \

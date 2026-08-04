@@ -1,17 +1,27 @@
 #!/usr/bin/env python3
-"""
-read_hid_devices - HID battery reader
+"""read_hid_devices - HID battery reader for the BatteryWatch plasmoid.
 
-Author: TheDogORB <thedogorb@proton.me>
+Scans /sys/class/hidraw for known devices (Keychron M5, Steam Controller 2...),
+reads their battery over hidraw and prints JSON for HIDDevicesProvider.qml:
+
+  {"name", "serial", "percentage", "charging", "deviceType"} for a readable
+  device, or {"name", "serial", "blocked": true, "vid", "pid",
+  "unblock_command", "deviceType"} for one that needs a udev rule.
+
+Organized in sections mirroring the concerns:
+  schema  - report schemas + generic decoder (pure)
+  devices - the registry of known devices (pure data)
+  udev    - udev rule files/commands for blocked devices
+  hid     - sysfs discovery + hidraw I/O
+  cli     - JSON output consumed by the widget
 """
 
 import json
 import os
+import re
 import select
-import subprocess
 import sys
 import time
-
 from enum import Enum
 from typing import NamedTuple, Callable
 
@@ -23,6 +33,10 @@ HID_BUFFER_SIZE = 64
 # stall the widget for the full stream timeout, especially when the mouse sleeps.
 REQUEST_TIMEOUT_SEC = 1
 
+
+# ══════════════════════════════════════════════════════════════════════════
+# schema - report schemas + generic decoder (pure, no hardware I/O)
+# ══════════════════════════════════════════════════════════════════════════
 # Device types, based on DeviceUtils.js
 class DeviceType(Enum):
     GAMEPAD     = "gamepad"
@@ -80,6 +94,46 @@ class RequestSchema(NamedTuple):
     def poll_timeout(self) -> float:
         return self.timeout
 
+# All DataPos referenced by a schema
+def schema_positions(schema):
+    yield schema.charge
+    st = schema.status
+    if isinstance(st, DataPos):
+        yield st
+    elif isinstance(st, ChargingStates):
+        yield st.pos
+
+# report_id -> minimum buffer length needed to read every field in that report
+def needed_reports(schema):
+    needed = {}
+    for pos in schema_positions(schema):
+        needed[pos.report_id] = max(needed.get(pos.report_id, 0), pos.data_byte + 1)
+    return needed
+
+# Generic interpreter: turns the collected report buffers into a status dict
+def interpret(schema, buffers):
+    raw = buffers[schema.charge.report_id][schema.charge.data_byte]
+    if schema.charge_range is None:
+        percentage = min(raw, 100)
+    else:
+        lo, hi = schema.charge_range
+        span = hi - lo
+        percentage = 0 if span <= 0 else max(0, min(100, round((raw - lo) * 100 / span)))
+
+    charging = False
+    st = schema.status
+    if isinstance(st, DataPos):
+        charging = bool(buffers[st.report_id][st.data_byte])
+    elif isinstance(st, ChargingStates):
+        state = buffers[st.pos.report_id][st.pos.data_byte]
+        charging = st.states.get(state, False)
+
+    return {"percentage": percentage, "charging": charging}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# devices - the registry of known/supported devices (pure data)
+# ══════════════════════════════════════════════════════════════════════════
 # Main class
 # Represents a device, and holds all the important data used for reading it out
 class Device(NamedTuple):
@@ -156,47 +210,44 @@ class FoundDevice(NamedTuple):
     desc:    Device
     pid:     int       # Product ID that actually matched (from sysfs)
 
+# ══════════════════════════════════════════════════════════════════════════
+# hid - sysfs discovery + hidraw I/O
+# ══════════════════════════════════════════════════════════════════════════
+# HID_ID=<bus>:<vendor>:<product> e.g. "0003:00003434:0000D028" -> vendor, product
+_HID_ID_RE = re.compile(r"[0-9a-fA-F]+:([0-9a-fA-F]+):([0-9a-fA-F]+)$")
+# HID_PHYS=<phys-path>/input<iface> e.g. "usb-0000:00:14.0-11/input4" -> phys, iface
+_HID_PHYS_RE = re.compile(r"(.*)/input(\d*)")
+
 # Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
 def parse_uevent(path):
-    vid = 0
-    pid = 0
-    iface = -1
-    serial = "unknown-hid"
-    phys = ""
-
     try:
         with open(path, "r") as file:
+            fields = {}
             for line in file:
                 line = line.rstrip("\r\n")
-                # Read out VID+PID
-                if line.startswith("HID_ID="):
-                    parts = line[7:].split(":")
-                    if len(parts) == 3:
-                        try:
-                            vid = int(parts[1], 16)
-                            pid = int(parts[2], 16)
-                        except ValueError:
-                            pass
-                # Read out physical device path + interface
-                elif line.startswith("HID_PHYS="):
-                    idx = line.find("/input")
-                    if idx >= 0:
-                        phys = line[9:idx]      # shared across a device's interfaces
-                        digits = ""
-                        for ch in line[idx + 6:]:
-                            if not ch.isdigit():
-                                break
-                            digits += ch
-                        iface = int(digits) if digits else -1
-                    else:
-                        phys = line[9:]
-                # Read out serial
-                elif line.startswith("HID_UNIQ="):
-                    val = line[9:]
-                    if val:
-                        serial = val
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    fields[key] = value
     except OSError:
         return None
+
+    vid = 0
+    pid = 0
+    m = _HID_ID_RE.match(fields.get("HID_ID", ""))
+    if m:
+        vid = int(m.group(1), 16)
+        pid = int(m.group(2), 16)
+
+    # HID_PHYS holds the physical device path plus its interface: ".../input4"
+    iface = -1
+    phys = fields.get("HID_PHYS", "")
+    m = _HID_PHYS_RE.match(phys)
+    if m:
+        phys = m.group(1)   # shared across a device's interfaces
+        iface = int(m.group(2)) if m.group(2) else -1
+
+    serial = fields.get("HID_UNIQ", "") or "unknown-hid"
+
     return vid, pid, iface, serial, phys
 
 # Returns the matching Device for a given vid/pid/iface, or None
@@ -212,6 +263,74 @@ def match_device(vid, pid, iface):
                 continue
             return dev
     return None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# udev - udev rule files/commands for blocked devices
+# ══════════════════════════════════════════════════════════════════════════
+# A device whose hidraw node can't be opened for the access level its schema
+# needs (missing udev rule) is reported as blocked; this section builds the
+# exact rule file and the exact terminal command the user runs to grant access.
+#
+# Each known device (e.g. "Keychron M5") gets ONE rule file that covers ALL of
+# its connection variants (wireless dongle + wired USB), so granting permission
+# once fixes every way the same device can connect - which interface the battery
+# happens to be on is an implementation detail the user shouldn't care about.
+# The file is wholly ours and can be removed with a plain `rm` (no risk of
+# clobbering user-written rules, no merge bookkeeping). The helper never
+# installs rules itself: it emits the exact terminal command on the blocked
+# device's JSON as "unblock_command", and the user runs it on their own terms
+# (no pkexec involved).
+UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the "Copy command" button.'
+
+# Where generated rule files are written; tests redirect this to a sandbox dir.
+UDEV_RULES_DIR = "/etc/udev/rules.d"
+
+def udev_rule_path(vid):
+    return f"{UDEV_RULES_DIR}/70-batterywatch-hid-{vid:04x}.rules"
+
+# Write access needed (RequestSchema sends a packet) vs. read-only stream
+def _udev_mode_for(vid):
+    for dev in KNOWN_DEVICES:
+        if vid == dev.vid:
+            return "0660" if isinstance(dev.source, RequestSchema) else "0440"
+    return "0660"
+
+# One udev rule line per connection variant of the device
+def udev_rule_for(vid):
+    lines = [
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'ATTRS{{idProduct}}=="{variant.pid:04x}", '
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
+        for dev in KNOWN_DEVICES if dev.vid == vid
+        for variant in dev.variants
+    ]
+    if lines:
+        return "\n".join(lines)
+    # Unknown device: a vid-wide rule still helps the owner track it down
+    return (
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
+    )
+
+# True when the udev rule for this device (all its variants) is installed
+def _rule_exists(vid):
+    return os.path.exists(udev_rule_path(vid))
+
+# The exact shell command a user can paste to authorize this one device. The
+# heredoc is wrapped in `sudo sh -c '...'`: fish rejects `<<EOF` redirections in
+# its own command line, but it treats this as a single quoted argument, so the
+# same readable heredoc pastes cleanly in sh, bash, zsh and fish. The rule body
+# holds no shell metacharacters ($, backticks), so the unquoted delimiter is safe.
+def udev_unblock_command(vid):
+    path = udev_rule_path(vid)
+    body = "\n".join([UDEV_HEADER] + udev_rule_for(vid).split("\n"))
+    return (
+        f"sudo sh -c 'tee {path} >/dev/null <<EOF\n"
+        f"{body}\n"
+        f"EOF'\n"
+        f"sudo udevadm control --reload-rules && sudo udevadm trigger"
+    )
 
 # Goes through /sys/class/hidraw* and collects all known interfaces
 def find_devices():
@@ -252,60 +371,6 @@ def find_devices():
         devices.append(FoundDevice(f"/dev/{name}", serial, desc, pid))
     return devices
 
-# All DataPos referenced by a schema
-def schema_positions(schema):
-    yield schema.charge
-    st = schema.status
-    if isinstance(st, DataPos):
-        yield st
-    elif isinstance(st, ChargingStates):
-        yield st.pos
-
-# report_id -> minimum buffer length needed to read every field in that report
-def needed_reports(schema):
-    needed = {}
-    for pos in schema_positions(schema):
-        needed[pos.report_id] = max(needed.get(pos.report_id, 0), pos.data_byte + 1)
-    return needed
-
-# Generic interpreter: turns the collected report buffers into a status dict
-def interpret(schema, buffers):
-    raw = buffers[schema.charge.report_id][schema.charge.data_byte]
-    if schema.charge_range is None:
-        percentage = min(raw, 100)
-    else:
-        lo, hi = schema.charge_range
-        span = hi - lo
-        percentage = 0 if span <= 0 else max(0, min(100, round((raw - lo) * 100 / span)))
-
-    charging = False
-    st = schema.status
-    if isinstance(st, DataPos):
-        charging = bool(buffers[st.report_id][st.data_byte])
-    elif isinstance(st, ChargingStates):
-        state = buffers[st.pos.report_id][st.pos.data_byte]
-        charging = st.states.get(state, False)
-
-    return {"percentage": percentage, "charging": charging}
-
-
-def _udev_hint(dev):
-    # Use a tmpfile sentinel so we only print once per device, not every poll cycle
-    sentinel = f"/tmp/.bw_hint_{os.path.basename(dev.devpath)}"
-    if os.path.exists(sentinel):
-        return
-    try:
-        open(sentinel, 'w').close()
-    except OSError:
-        pass
-    print(
-        f"batterywatch: {dev.desc.name}: {dev.devpath} - battery unavailable.\n"
-        f"  Fix in the widget: open the popup, click the copy button on the device,\n"
-        f"  then paste the command below in a terminal to grant access.\n"
-        f"  {udev_unblock_command(dev.desc.vid)}",
-        file=sys.stderr
-    )
-
 # True when the device is present but its hidraw node can't be opened for the
 # access level the schema needs (missing udev rule). Asleep devices *can* be
 # opened, so this only fires for a genuine permissions problem.
@@ -328,7 +393,6 @@ def open_device(dev, schema):
     try:
         fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
     except OSError:
-        _udev_hint(dev)
         return None
 
     if needs_write:
@@ -402,113 +466,59 @@ def read_status_hw(dev):
 def read_status(dev):
     return read_status_hw(dev)
 
-# Minimal JSON string escape, so ", \ and newlines don't break the struct
-def jstr(s):
-    return (
-        s.replace("\\", "\\\\")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "\\r")
-    )
 
-# ── Per-device udev rule command ────────────────────────────────────────────
-# Each known device (e.g. "Keychron M5") gets ONE rule file that covers ALL of
-# its connection variants (wireless dongle + wired USB), so granting permission
-# once fixes every way the same device can connect - which interface the battery
-# happens to be on is an implementation detail the user shouldn't care about.
-# The file is wholly ours and can be removed with a plain `rm` (no risk of
-# clobbering user-written rules, no merge bookkeeping). The helper never
-# installs rules itself: it emits the exact terminal command on the blocked
-# device's JSON as "unblock_command", and the user runs it on their own terms
-# (no pkexec involved).
+# ══════════════════════════════════════════════════════════════════════════
+# cli - JSON output consumed by the widget
+# ══════════════════════════════════════════════════════════════════════════
+# Testing mode (no hardware): fake devices that mirror real behavior - each one
+# looks blocked until its udev rule exists, then reports a battery.
+_SIMULATE_DEVICES = [
+    ("Keychron M5", "sim-keychron-m5", 0x3434, "d028", "mouse", 88, False),
+    ("Steam Controller 2", "sim-steam-controller-2", 0x28DE, "1304", "gamepad", 85, True),
+]
 
-UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the "Copy command" button.'
+def _simulate():
+    out = []
+    for name, serial, vid, pid, dtype, pct, charging in _SIMULATE_DEVICES:
+        if _rule_exists(vid):
+            out.append({"name": name, "serial": serial, "percentage": pct,
+                        "charging": charging, "deviceType": dtype})
+        else:
+            out.append({"name": name, "serial": serial, "blocked": True,
+                        "vid": f"{vid:04x}", "pid": pid,
+                        "unblock_command": udev_unblock_command(vid),
+                        "deviceType": dtype})
+    return out
 
-def udev_rule_path(vid):
-    return f"/etc/udev/rules.d/70-batterywatch-hid-{vid:04x}.rules"
-
-# Write access needed (RequestSchema sends a packet) vs. read-only stream
-def _udev_mode_for(vid):
-    for dev in KNOWN_DEVICES:
-        if vid == dev.vid:
-            return "0660" if isinstance(dev.source, RequestSchema) else "0440"
-    return "0660"
-
-# One udev rule line per connection variant of the device
-def udev_rule_for(vid):
-    lines = [
-        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
-        f'ATTRS{{idProduct}}=="{variant.pid:04x}", '
-        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
-        for dev in KNOWN_DEVICES if dev.vid == vid
-        for variant in dev.variants
-    ]
-    if lines:
-        return "\n".join(lines)
-    # Unknown device: a vid-wide rule still helps the owner track it down
-    return (
-        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
-        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
-    )
-
-# True when the udev rule for this device (all its variants) is installed
-def _rule_exists(vid):
-    return os.path.exists(udev_rule_path(vid))
-
-# The exact shell command a user can paste to authorize this one device. The
-# heredoc is wrapped in `sudo sh -c '...'`: fish rejects `<<EOF` redirections in
-# its own command line, but it treats this as a single quoted argument, so the
-# same readable heredoc pastes cleanly in sh, bash, zsh and fish. The rule body
-# holds no shell metacharacters ($, backticks), so the unquoted delimiter is safe.
-def udev_unblock_command(vid):
-    path = udev_rule_path(vid)
-    body = "\n".join([UDEV_HEADER] + udev_rule_for(vid).split("\n"))
-    return (
-        f"sudo sh -c 'tee {path} >/dev/null <<EOF\n"
-        f"{body}\n"
-        f"EOF'\n"
-        f"sudo udevadm control --reload-rules && sudo udevadm trigger"
-    )
+# Turns one found device into its JSON dict, or None when it neither reported
+# a battery nor is blocked (e.g. present but asleep).
+def _device_entry(dev):
+    status = read_status(dev)
+    if status is not None:
+        return {"name": dev.desc.name, "serial": dev.serial,
+                "percentage": status["percentage"], "charging": status["charging"],
+                "deviceType": dev.desc.device_type.value}
+    if is_blocked(dev):
+        # Present but no permission to open: report it so the widget can offer
+        # to copy the udev command for this one device.
+        # "unblock_command" is the exact terminal command for this one device.
+        return {"name": dev.desc.name, "serial": dev.serial, "blocked": True,
+                "vid": f"{dev.desc.vid:04x}", "pid": f"{dev.pid:04x}",
+                "unblock_command": udev_unblock_command(dev.desc.vid),
+                "deviceType": dev.desc.device_type.value}
+    return None
 
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--simulate":
-        # Testing mode (no hardware): emits a fake Keychron M5 that looks
-        # blocked until its udev rule exists, then reports a battery.
-        vid, pid = 0x3434, 0xD028
-        if _rule_exists(vid):
-            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","percentage":88,"charging":false,"deviceType":"mouse"}]')
-        else:
-            print('[{"name":"Keychron M5","serial":"sim-keychron-m5","blocked":true,"vid":"3434","pid":"d028","unblock_command":"%s","deviceType":"mouse"}]' % jstr(udev_unblock_command(vid)))
+        print(json.dumps(_simulate()))
         sys.exit(0)
 
     parts = []
     for dev in find_devices():
-        status = read_status(dev)
-        if status is not None:
-            parts.append(
-                '{"name":"%s","serial":"%s","percentage":%d,"charging":%s,"deviceType":"%s"}' % (
-                    jstr(dev.desc.name),
-                    jstr(dev.serial),
-                    status["percentage"],
-                    "true" if status["charging"] else "false",
-                    jstr(dev.desc.device_type.value),
-                )
-            )
-        elif is_blocked(dev):
-            # Present but no permission to open: report it so the widget can
-            # offer to copy the udev command for this one device.
-            # "unblock_command" is the exact terminal command for this one device.
-            parts.append(
-                '{"name":"%s","serial":"%s","blocked":true,"vid":"%04x","pid":"%04x","unblock_command":"%s","deviceType":"%s"}' % (
-                    jstr(dev.desc.name),
-                    jstr(dev.serial),
-                    dev.desc.vid,
-                    dev.pid,
-                    jstr(udev_unblock_command(dev.desc.vid)),
-                    jstr(dev.desc.device_type.value),
-                )
-            )
-    print("[" + ",".join(parts) + "]")
+        entry = _device_entry(dev)
+        if entry is not None:
+            parts.append(entry)
+    print(json.dumps(parts))
 
 if __name__ == "__main__":
     main()
