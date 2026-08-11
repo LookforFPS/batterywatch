@@ -131,6 +131,20 @@ def interpret(schema, buffers):
     return {"percentage": percentage, "charging": charging}
 
 
+# Voltage (mV) -> percentage, linear interpolation over a sorted-by-percentage
+# curve of (percent, millivolt) breakpoints (descending mV). Used by the
+# Logitech HID++ headset family, which reports only a raw battery voltage.
+def _voltage_percentage(voltage_mv, curve):
+    for (hi_pct, hi_mv), (lo_pct, lo_mv) in zip(curve, curve[1:]):
+        if voltage_mv >= hi_mv:
+            return hi_pct
+        if voltage_mv >= lo_mv:
+            span = hi_mv - lo_mv
+            fraction = (voltage_mv - lo_mv) / span if span > 0 else 0
+            return round(lo_pct + (hi_pct - lo_pct) * fraction)
+    return curve[-1][0]
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # devices - the registry of known/supported devices (pure data)
 # ══════════════════════════════════════════════════════════════════════════
@@ -146,6 +160,54 @@ class Device(NamedTuple):
 
 # List of known/supported devices
 # iface = None means that any interface contains battery data
+
+
+# ── Logitech HID++ 1.0 headsets ────────────────────────────────────────────
+# One shared protocol (headsetcontrol's requestBatteryHIDPP): write a 20-byte
+# long message, read a 7-byte short reply on report 0x10 that echoes the
+# request's 0xff byte. Only the feature command + mV->% curve differ per model.
+# Commands, PIDs, curves and the vendor interface 3 are taken from
+# headsetcontrol (GPL-3.0): logitech_g533.hpp, logitech_g535.hpp,
+# logitech_gpro.hpp, logitech_g633_g933_935.hpp + protocols/logitech_calibrations.hpp.
+G633_CURVE = ((100, 4100), (80, 3950), (60, 3850), (40, 3750), (20, 3650), (10, 3500), (5, 3300), (0, 3150))
+G533_CURVE = ((100, 4200), (50, 3850), (30, 3790), (20, 3750), (5, 3680), (0, 3330))
+G535_CURVE = ((100, 4175), (50, 3817), (30, 3766), (20, 3730), (5, 3664), (0, 3310))
+GPRO_CURVE = ((100, 4150), (50, 3830), (30, 3780), (20, 3740), (5, 3670), (0, 3320))
+
+
+def _logitech_voltage_parse(curve):
+    # 0x10 reply: [0]=0x10, [1]=0xff, [2]=status (0xff = off), [3]=0x00,
+    # [4..5]=voltage big-endian, [6]=charge state (0x01 discharging, 0x03 charging)
+    def parse(buffers):
+        buf = buffers[0x10]
+        if buf[2] == 0xFF:
+            return None  # device off / not sending
+        voltage_mv = (buf[4] << 8) | buf[5]
+        if voltage_mv < curve[-1][1]:
+            return None  # below the lowest calibrated voltage (offline/invalid)
+        return {"percentage": _voltage_percentage(voltage_mv, curve),
+                "charging": buf[6] == 0x03}
+    return parse
+
+
+def _logitech_headset(name, cmd, curve, *pids):
+    """A single HID++ 1.0 headset; returns the ready-made Device."""
+    return Device(
+        name=name,
+        device_type=DeviceType.HEADSET,
+        vid=0x046D,
+        variants=tuple(DeviceVariant(pid, 3) for pid in pids),
+        source=RequestSchema(
+            charge=DataPos(0x10, 4),
+            charge_range=None,
+            status=ChargingStates(pos=DataPos(0x10, 6), states={0x01: False, 0x03: True}),
+            request=bytes([0x11, 0xFF, cmd[0], cmd[1]]) + b"\x00" * 16,
+            timeout=REQUEST_TIMEOUT_SEC,
+        ),
+        parse=_logitech_voltage_parse(curve),
+    )
+
+
 KNOWN_DEVICES = [
     Device(
         name="Keychron M5",
@@ -200,7 +262,12 @@ KNOWN_DEVICES = [
             )
         ),
         parse=None,
-    )
+    ),
+    # ── Logitech HID++ 1.0 headsets ────────────────────────────────────────
+    _logitech_headset("Logitech G633/G635/G733/G933/G935", (0x08, 0x0A), G633_CURVE, 0x0A5C, 0x0A89, 0x0A5B, 0x0A87, 0x0AB5, 0x0AFE, 0x0B1F),
+    _logitech_headset("Logitech G533", (0x07, 0x01), G533_CURVE, 0x0A66),
+    _logitech_headset("Logitech G535", (0x05, 0x0D), G535_CURVE, 0x0AC4),
+    _logitech_headset("Logitech G PRO Series", (0x06, 0x0D), GPRO_CURVE, 0x0AA7, 0x0AAA, 0x0ABA, 0x0AFB, 0x0AFC),
 ]
 
 # Ptr to a location/device that has been found
@@ -475,6 +542,7 @@ def read_status(dev):
 _SIMULATE_DEVICES = [
     ("Keychron M5", "sim-keychron-m5", 0x3434, "d028", "mouse", 88, False),
     ("Steam Controller 2", "sim-steam-controller-2", 0x28DE, "1304", "gamepad", 85, True),
+    ("Logitech G733", "sim-g733", 0x046D, "0ab5", "audio-headset", 64, True),
 ]
 
 def _simulate():

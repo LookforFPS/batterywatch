@@ -134,6 +134,20 @@ def install_sc2_scenario():
     scenario["reply_buf"] = bytearray(16)
     scenario["reply_fd"] = 207
 
+def install_g733_scenario(iface=3):
+    # Logitech HID++ headset: vendor interface 3, request 11 ff 08 0a, 0x10 reply
+    scenario["uevents"] = {
+        "hidraw8": ("DRIVER=hid-generic\nHID_ID=0003:0000046D:00000AB5\n"
+                    "HID_NAME=Logitech G733 LIGHTSPEED\n"
+                    f"HID_PHYS=usb-0000:00:14.0-11/input{iface}\nHID_UNIQ=\n"),
+    }
+    scenario["fake_devs"] = {"/dev/hidraw8": 208}
+    scenario["deny"] = False
+    scenario["writes"] = []
+    scenario["reads"] = []
+    scenario["reply_buf"] = bytearray(8)
+    scenario["reply_fd"] = 208
+
 def set_m5_reply(byte20=87, report_id=0xB4, cmd=0x06):
     buf = bytearray(64)
     buf[0] = report_id
@@ -407,6 +421,8 @@ def test_simulate_both_blocked_before_any_rule():
              "unblock_command": rhd.udev_unblock_command(0x3434), "deviceType": "mouse"},
             {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "blocked": True, "vid": "28de", "pid": "1304",
              "unblock_command": rhd.udev_unblock_command(0x28de), "deviceType": "gamepad"},
+            {"name": "Logitech G733", "serial": "sim-g733", "blocked": True, "vid": "046d", "pid": "0ab5",
+             "unblock_command": rhd.udev_unblock_command(0x046d), "deviceType": "audio-headset"},
         ]
 
 def test_simulate_m5_reports_after_its_rule():
@@ -417,6 +433,8 @@ def test_simulate_m5_reports_after_its_rule():
             {"name": "Keychron M5", "serial": "sim-keychron-m5", "percentage": 88, "charging": False, "deviceType": "mouse"},
             {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "blocked": True, "vid": "28de", "pid": "1304",
              "unblock_command": rhd.udev_unblock_command(0x28de), "deviceType": "gamepad"},
+            {"name": "Logitech G733", "serial": "sim-g733", "blocked": True, "vid": "046d", "pid": "0ab5",
+             "unblock_command": rhd.udev_unblock_command(0x046d), "deviceType": "audio-headset"},
         ]
 
 def test_simulate_both_report_after_both_rules():
@@ -427,7 +445,79 @@ def test_simulate_both_report_after_both_rules():
         assert json.loads(run_main_capture()) == [
             {"name": "Keychron M5", "serial": "sim-keychron-m5", "percentage": 88, "charging": False, "deviceType": "mouse"},
             {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "percentage": 85, "charging": True, "deviceType": "gamepad"},
+            {"name": "Logitech G733", "serial": "sim-g733", "blocked": True, "vid": "046d", "pid": "0ab5",
+             "unblock_command": rhd.udev_unblock_command(0x046d), "deviceType": "audio-headset"},
         ]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Logitech HID++ 1.0 headset (G733): voltage read
+# ══════════════════════════════════════════════════════════════════════════
+def test_voltage_percentage_curve():
+    assert rhd._voltage_percentage(4100, rhd.G633_CURVE) == 100
+    assert rhd._voltage_percentage(4050, rhd.G633_CURVE) == 93   # 80 + 20 * 100/150 between 3950-4100
+    assert rhd._voltage_percentage(3150, rhd.G633_CURVE) == 0
+    assert rhd._voltage_percentage(3000, rhd.G633_CURVE) == 0    # below curve floor -> clamp to 0
+
+def test_logitech_voltage_parse_basic():
+    install_g733_scenario()
+    set_g733_reply(status=0x01, voltage_mv=4050, state=0x01)
+    assert rhd.find_devices()[0].desc.name == "Logitech G633/G635/G733/G933/G935"
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 93, "charging": False}
+
+def test_logitech_voltage_parse_charging():
+    install_g733_scenario()
+    set_g733_reply(status=0x01, voltage_mv=4100, state=0x03)
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 100, "charging": True}
+
+def test_logitech_voltage_parse_off_returns_none():
+    install_g733_scenario()
+    set_g733_reply(status=0xFF, voltage_mv=4100, state=0x03)
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+def test_logitech_voltage_parse_low_voltage_returns_none():
+    install_g733_scenario()
+    set_g733_reply(status=0x01, voltage_mv=3100, state=0x01)
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+def set_g733_reply(status=0x01, voltage_mv=4000, state=0x03):
+    buf = bytearray(8)
+    buf[0] = 0x10
+    buf[1] = 0xFF
+    buf[2] = status
+    buf[3] = 0x00
+    buf[4] = (voltage_mv >> 8) & 0xFF
+    buf[5] = voltage_mv & 0xFF
+    buf[6] = state
+    scenario["reply_buf"] = buf
+
+def test_logitech_g733_match_and_udev_rule():
+    install_g733_scenario()
+    sdev = rhd.find_devices()[0]
+    assert sdev.desc.name == "Logitech G633/G635/G733/G933/G935"
+    assert sdev.pid == 0x0AB5
+    assert sdev.desc.source.request == bytes([0x11, 0xFF, 0x08, 0x0A]) + b"\x00" * 16, "20-byte long request"
+    rule = rhd.udev_rule_for(sdev.desc.vid)
+    assert 'MODE="0660"' in rule, "headset needs write access to answer the request"
+    assert "SYMLINK" not in rule
+
+def test_logitech_g733_offline_produces_no_entry():
+    # when the headset is off, replies are status 0xff and must be skipped
+    install_g733_scenario()
+    set_g733_reply(status=0xFF, voltage_mv=0, state=0x03)
+    assert rhd._device_entry(rhd.find_devices()[0]) is None
+
+def test_logitech_headset_families():
+    headsets = {d.name: d for d in rhd.KNOWN_DEVICES if d.device_type == rhd.DeviceType.HEADSET}
+    assert set(headsets) == {"Logitech G633/G635/G733/G933/G935", "Logitech G533", "Logitech G535", "Logitech G PRO Series"}
+    for d in headsets.values():
+        assert all(v.iface == 3 for v in d.variants), f"{d.name}: all on vendor interface 3"
+        assert d.source.request == bytes([0x11, 0xFF, d.source.request[2], d.source.request[3]]) + b"\x00" * 16, f"{d.name}: 20-byte long request"
+        assert d.parse is not None
+    assert [v.pid for v in headsets["Logitech G633/G635/G733/G933/G935"].variants] == [0x0A5C, 0x0A89, 0x0A5B, 0x0A87, 0x0AB5, 0x0AFE, 0x0B1F]
+    assert headsets["Logitech G533"].source.request[:4] == bytes([0x11, 0xFF, 0x07, 0x01])
+    assert headsets["Logitech G535"].source.request[:4] == bytes([0x11, 0xFF, 0x05, 0x0D])
+    assert headsets["Logitech G PRO Series"].source.request[:4] == bytes([0x11, 0xFF, 0x06, 0x0D])
 
 
 # ══════════════════════════════════════════════════════════════════════════
