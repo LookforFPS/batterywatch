@@ -1,0 +1,493 @@
+#!/usr/bin/env python3
+"""
+test_read_hid_devices.py - self-check for the HID helper WITHOUT hardware.
+
+Runs the real contents/bin/read_hid_devices script against fully simulated
+sysfs + hidraw devices and verifies every behavior the widget depends on:
+
+  M5 (Keychron):  request bytes, interface-4 targeting, battery decode,
+                  charging decode, wired d048, no-reply handling (device
+                  dropped, stateless per run), blocked reporting, dynamic
+                  udev rule generation.
+  SC2 (stream):   battery decode from stream report, charging state, no write.
+
+Written as plain pytest-style test_*() functions so they read like idiomatic
+Python tests. They run under pytest directly (pytest collects test_* in this
+file) AND standalone via the tiny runner at the bottom, so no dependencies
+are needed.
+
+Run:  python3 contents/bin/tests/test_read_hid_devices.py
+  or: pytest contents/bin/tests/test_read_hid_devices.py
+Exit: 0 = all checks passed, 1 = at least one failed.
+"""
+
+import builtins
+import contextlib
+import importlib.machinery
+import importlib.util
+import io
+import json
+import os
+import py_compile
+import select
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+BIN = os.path.normpath(os.path.join(HERE, ".."))
+HELPER = os.path.join(BIN, "read_hid_devices")
+
+# Capture the real os functions BEFORE patch_module() replaces os.listdir etc. on the
+# shared os module (rhd.os IS this os module), so the real subprocess run keeps working.
+real_listdir = os.listdir
+real_osopen = os.open
+real_oswrite = os.write
+real_osread = os.read
+real_osclose = os.close
+real_poll = select.poll
+
+
+def load_helper():
+    # Load the real contents/bin/read_hid_devices script as module "rhd", so
+    # the tests exercise the same code the widget runs. The file has no .py
+    # suffix, so the loader is specified explicitly.
+    loader = importlib.machinery.SourceFileLoader("rhd", HELPER)
+    spec = importlib.util.spec_from_loader("rhd", loader)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["rhd"] = mod
+    loader.exec_module(mod)
+    return mod
+
+
+rhd = load_helper()
+
+# ══════════════════════════════════════════════════════════════════════════
+# Scenario fakes: swap these globals between the M5 and SC2 scenarios
+# ══════════════════════════════════════════════════════════════════════════
+scenario = {"uevents": {}, "fake_devs": {}, "reply_fd": None, "reply_buf": bytearray(64), "writes": [], "reads": []}
+
+def m5_uevent(node, pid="0000D028", name="Keychron Keychron Ultra-Link 8K", iface=4):
+    return (f"DRIVER=hid-generic\nHID_ID=0003:00003434:{pid}\n"
+            f"HID_NAME={name}\nHID_PHYS=usb-0000:00:14.0-11/input{iface}\nHID_UNIQ=\n")
+
+def fake_open(path, mode="r", *a, **k):
+    if path.startswith("/sys/class/hidraw"):
+        return io.StringIO(scenario["uevents"][path.split("/")[4]])
+    return builtins.open(path, mode, *a, **k)
+
+def fake_osopen(path, flags):
+    if scenario.get("deny") and path in scenario["fake_devs"]:
+        raise PermissionError(13, "Permission denied")
+    if path in scenario["fake_devs"]:
+        return scenario["fake_devs"][path]
+    raise FileNotFoundError(2, "no such file")
+
+def fake_write(fd, data):
+    scenario["writes"].append(fd)
+    return len(data)
+
+def fake_read(fd, size):
+    scenario["reads"].append(fd)
+    if fd == scenario["reply_fd"]:
+        return bytes(scenario["reply_buf"])
+    return b""
+
+class FakePoller:
+    def __init__(self):
+        self.reg = []
+    def register(self, fd, ev):
+        self.reg.append(fd)
+    def unregister(self, fd):
+        if fd in self.reg:
+            self.reg.remove(fd)
+    def poll(self, timeout_ms):
+        for fd in self.reg:
+            if fd == scenario["reply_fd"]:
+                return [(fd, select.POLLIN)]
+        return []
+
+def install_m5_scenario(pid="0000D028", name="Keychron Keychron Ultra-Link 8K", with_blocked=False):
+    scenario["uevents"] = {
+        "hidraw3": m5_uevent("hidraw3", pid, name, 0),
+        "hidraw4": m5_uevent("hidraw4", pid, name, 1),
+        "hidraw5": m5_uevent("hidraw5", pid, name, 2),
+        "hidraw6": m5_uevent("hidraw6", pid, name, 4),
+    }
+    scenario["fake_devs"] = {f"/dev/{k}": 300 + int(k[-1]) for k in scenario["uevents"]}
+    scenario["deny"] = with_blocked
+    scenario["writes"] = []
+    scenario["reads"] = []
+    scenario["reply_buf"] = bytearray(64)
+    scenario["reply_fd"] = 306
+
+def install_sc2_scenario():
+    scenario["uevents"] = {
+        "hidraw7": "DRIVER=hid-generic\nHID_ID=0003:000028DE:00001304\n"
+                   "HID_NAME=Steam Controller 2\n"
+                   "HID_PHYS=usb-0000:00:14.0-7/input2\nHID_UNIQ=\n",
+    }
+    scenario["fake_devs"] = {"/dev/hidraw7": 207}
+    scenario["deny"] = False
+    scenario["writes"] = []
+    scenario["reads"] = []
+    scenario["reply_buf"] = bytearray(16)
+    scenario["reply_fd"] = 207
+
+def set_m5_reply(byte20=87, report_id=0xB4, cmd=0x06):
+    buf = bytearray(64)
+    buf[0] = report_id
+    buf[1] = cmd
+    buf[20] = byte20
+    scenario["reply_buf"] = buf
+
+def set_m5_reply_hex(hexstr):
+    raw = bytes.fromhex(hexstr.replace(" ", ""))
+    scenario["reply_buf"] = bytearray(raw.ljust(64, b"\x00")[:64])
+
+def set_sc2_report(state=0x02, pct=85):
+    buf = bytearray(16)
+    buf[0] = 0x43
+    buf[1] = state
+    buf[2] = pct
+    scenario["reply_buf"] = buf
+
+def patch_module():
+    rhd.open = fake_open
+    rhd.os.open = fake_osopen
+    rhd.os.listdir = lambda *a: list(scenario["uevents"].keys())
+    rhd.os.write = fake_write
+    rhd.os.read = fake_read
+    rhd.os.close = lambda fd: None
+    rhd.select.poll = FakePoller
+
+def run_main_capture():
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        try:
+            rhd.main()
+        except SystemExit:
+            pass
+    return out.getvalue().strip()
+
+@contextlib.contextmanager
+def sandboxed_rules():
+    # Point the generated-rule dir somewhere writable (real dir is /etc/udev/rules.d)
+    rules_dir = tempfile.mkdtemp()
+    orig = rhd.UDEV_RULES_DIR
+    rhd.UDEV_RULES_DIR = rules_dir
+    try:
+        yield rules_dir
+    finally:
+        rhd.UDEV_RULES_DIR = orig
+
+@contextlib.contextmanager
+def simulate_env():
+    # --simulate reads rule files from UDEV_RULES_DIR and sys.argv
+    sim_dir = tempfile.mkdtemp()
+    orig_rules = rhd.UDEV_RULES_DIR
+    saved_argv = sys.argv
+    rhd.UDEV_RULES_DIR = sim_dir
+    sys.argv = ["read_hid_devices", "--simulate"]
+    try:
+        yield sim_dir
+    finally:
+        sys.argv = saved_argv
+        rhd.UDEV_RULES_DIR = orig_rules
+
+# Prime the tempdir cache BEFORE patch_module() replaces os.open: the first
+# tempfile.mkdtemp() call probes /tmp via os.open(path, flags, 0o600), which
+# the fake would reject (2-arg signature).
+tempfile.gettempdir()
+patch_module()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Schema / reference behavior
+# ══════════════════════════════════════════════════════════════════════════
+def test_reference_match():
+    # Reference match (github.com/itayavra/batterywatch/issues/5)
+    dev = rhd.KNOWN_DEVICES[0]
+    assert dev.source.request == bytes.fromhex("b306") + b"\x00" * 62
+    assert dev.source.timeout == 1, "request timeout (reference read 128, 1000ms)"
+    assert dev.source.charge == rhd.DataPos(0xB4, 20), "battery byte offset (reference data_array[20])"
+    assert dev.variants == (rhd.DeviceVariant(0xD028, 4), rhd.DeviceVariant(0xD048, 4))
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Real hardware captures (StarPepe, all 3 states)
+# ══════════════════════════════════════════════════════════════════════════
+def test_real_capture_wireless_6_percent():
+    install_m5_scenario()
+    set_m5_reply_hex("b4 06 00 02 02 02 90 01 20 03 40 06 80 0c 88 13 15 05 04 0a 06"
+                     " 00 00 00 00 00 00 b7 00 00 00 04 04 04 04 04 04 04 04 04 04"
+                     " 00 00 00 00 01 02 03 04 05 06 05 00 00 00 00 00 00 00 00 00 00 00 00")
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 6, "charging": False}
+
+def test_real_capture_charging_ext_charger():
+    install_m5_scenario()
+    set_m5_reply_hex("b4 06 00 02 02 02 90 01 20 03 40 06 80 0c 88 13 15 05 04 0a 87"
+                     " 00 00 00 00 00 00 b7 00 00 00 04 04 04 04 04 04 04 04 04 04"
+                     " 00 00 00 00 01 02 03 04 05 06 05 00 00 00 00 00 00 00 00 00 00 00 00")
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 7, "charging": True}
+
+def test_real_capture_wired_d048():
+    install_m5_scenario(pid="0000D048", name="Keychron M5")
+    set_m5_reply_hex("b4 06 00 02 02 02 90 01 20 03 40 06 80 0c 88 13 15 05 04 0a 89"
+                     " 00 00 00 00 00 00 b7 00 00 00 04 04 04 04 04 04 04 04 04 04"
+                     " 00 00 00 00 01 02 03 04 05 06 05 00 00 00 00 00 00 00 00 00 00 00 00")
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 9, "charging": True}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# M5: discovery (interface-4 targeting)
+# ══════════════════════════════════════════════════════════════════════════
+def test_discovery_targets_interface_4_only():
+    install_m5_scenario()
+    devs = rhd.find_devices()
+    assert [d.devpath for d in devs] == ["/dev/hidraw6"], f"found: {[d.devpath for d in devs]!r}"
+    assert devs[0].serial == "usb-0000:00:14.0-11", "serial falls back to the physical path"
+    assert devs[0].pid == 0xD028, "matched pid recorded"
+
+def test_discovery_no_interface_4_node_matches_nothing():
+    install_m5_scenario()
+    scenario["uevents"]["hidraw6"] = m5_uevent("hidraw6", iface=5)
+    assert rhd.find_devices() == []
+
+def test_discovery_two_dongles_are_distinct():
+    install_m5_scenario()
+    scenario["uevents"]["hidraw9"] = m5_uevent("hidraw9").replace("00:14.0-11", "00:14.0-12")
+    scenario["fake_devs"] = {f"/dev/{k}": 300 + int(k[-1]) for k in scenario["uevents"]}
+    devs = rhd.find_devices()
+    assert sorted(d.serial for d in devs) == ["usb-0000:00:14.0-11", "usb-0000:00:14.0-12"], \
+        f"serials: {[d.serial for d in devs]!r}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# M5: battery read (request + 0xB4 reply)
+# ══════════════════════════════════════════════════════════════════════════
+def test_m5_discharging_87():
+    install_m5_scenario()
+    set_m5_reply(byte20=87)
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 87, "charging": False}
+    assert scenario["writes"] == [306], f"request written exactly once to vendor iface: {scenario['writes']!r}"
+
+def test_m5_charging_decode():
+    install_m5_scenario()
+    set_m5_reply(byte20=135)
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 7, "charging": True}, "0x80 flag + level 7"
+
+def test_m5_charging_level_clamped_to_100():
+    install_m5_scenario()
+    set_m5_reply(byte20=240)
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 100, "charging": True}, "raw 240 -> 112 clamped"
+
+def test_m5_wrong_report_id_rejected():
+    install_m5_scenario()
+    set_m5_reply(report_id=0xB3, byte20=87)
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+def test_m5_bad_command_echo_rejected():
+    install_m5_scenario()
+    set_m5_reply(cmd=0x00, byte20=87)
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# M5: stateless - a dead device drops, then re-reads live on the next run
+# ══════════════════════════════════════════════════════════════════════════
+def test_m5_stateless_dead_device_drops_then_recovers():
+    install_m5_scenario()
+    set_m5_reply(byte20=87)
+    d = rhd.find_devices()[0]
+    assert rhd.read_status(d) == {"percentage": 87, "charging": False}
+
+    # Dead link (mouse wired elsewhere): the node is still enumerated but never
+    # answers. Stateless helper reports None -> the widget drops the entry.
+    scenario["reply_fd"] = None
+    scenario["writes"].clear()
+    assert rhd.read_status(d) is None
+    assert scenario["writes"] == [306], f"request still written once: {scenario['writes']!r}"
+
+    scenario["reply_fd"] = 306
+    assert rhd.read_status(d) == {"percentage": 87, "charging": False}, "next run re-reads hardware (no stale cache)"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# M5: wired mode (d048)
+# ══════════════════════════════════════════════════════════════════════════
+def test_wired_d048_found_and_decoded():
+    install_m5_scenario(pid="0000D048", name="Keychron M5")
+    set_m5_reply(byte20=130)
+    devs = rhd.find_devices()
+    assert [d.devpath for d in devs] == ["/dev/hidraw6"], f"found: {[d.devpath for d in devs]!r}"
+    assert rhd.read_status(devs[0]) == {"percentage": 2, "charging": True}, "byte20=130 -> 2%"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# M5: blocked (needs udev rule) reporting
+# ══════════════════════════════════════════════════════════════════════════
+def test_is_blocked_true_on_eacces():
+    install_m5_scenario(with_blocked=True)
+    assert rhd.is_blocked(rhd.find_devices()[0]) is True
+
+def test_is_blocked_false_when_readable():
+    install_m5_scenario(with_blocked=False)
+    assert rhd.is_blocked(rhd.find_devices()[0]) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Per-device udev rule command (one rule file per device/vid)
+# ══════════════════════════════════════════════════════════════════════════
+def test_udev_rule_path_is_vid_wide():
+    assert rhd.udev_rule_path(0x3434) == "/etc/udev/rules.d/70-batterywatch-hid-3434.rules"
+
+def test_m5_rule_covers_both_variants():
+    rule = rhd.udev_rule_for(0x3434)
+    assert rule.count('ATTRS{idProduct}') == 2, "one line per variant"
+    assert 'ATTRS{idProduct}=="d028"' in rule
+    assert 'ATTRS{idProduct}=="d048"' in rule
+
+def test_m5_rule_uses_write_mode():
+    assert rhd.udev_rule_for(0x3434).count('MODE="0660"') == 2
+
+def test_sc2_rule_uses_read_only_mode():
+    assert rhd.udev_rule_for(0x28de).count('MODE="0440"') == 2
+
+def test_install_udev_removed():
+    # The install path was removed: the helper only emits the command, the user runs it
+    assert not hasattr(rhd, "install_udev")
+
+def test_udev_unblock_command_names_the_rule_file():
+    with sandboxed_rules() as rules_dir:
+        cmd = rhd.udev_unblock_command(0x3434)
+        assert os.path.join(rules_dir, "70-batterywatch-hid-3434.rules") in cmd, cmd
+
+def test_udev_unblock_command_contains_rule_and_reload():
+    cmd = rhd.udev_unblock_command(0x3434)
+    assert 'ATTRS{idVendor}=="3434"' in cmd
+    assert "udevadm control --reload-rules" in cmd
+    assert "udevadm trigger" in cmd
+
+def test_udev_unblock_command_is_readable_heredoc():
+    # Wrapped in `sudo sh -c '...'` so the same heredoc pastes in sh/bash/zsh/fish
+    cmd = rhd.udev_unblock_command(0x3434)
+    assert cmd.startswith("sudo sh -c 'tee ")
+    assert "<<EOF" in cmd
+    assert "EOF'" in cmd
+
+def test_emitted_command_writes_one_file_covering_every_variant():
+    with sandboxed_rules() as rules_dir:
+        # No install path exists anymore: simulate what the user runs by
+        # executing the emitted tee block ourselves.
+        cmd = rhd.udev_unblock_command(0x3434)
+        wrapper = cmd[:cmd.index("EOF'") + len("EOF'")]
+        subprocess.run(["sh", "-c", wrapper.replace("sudo ", "")], check=True)
+        with open(os.path.join(rules_dir, "70-batterywatch-hid-3434.rules")) as f:
+            rule = f.read()
+        assert 'ATTRS{idProduct}=="d028"' in rule
+        assert 'ATTRS{idProduct}=="d048"' in rule
+        assert rule.count(rhd.UDEV_HEADER) == 1
+
+def test_udev_rule_exists_is_vid_wide():
+    with sandboxed_rules() as rules_dir:
+        with open(os.path.join(rules_dir, "70-batterywatch-hid-3434.rules"), "w") as f:
+            f.write(rhd.UDEV_HEADER + "\n" + rhd.udev_rule_for(0x3434) + "\n")
+        assert rhd._rule_exists(0x3434) is True, "any variant covered"
+        assert rhd._rule_exists(0x28de) is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# --simulate mode (no hardware)
+# ══════════════════════════════════════════════════════════════════════════
+def test_simulate_both_blocked_before_any_rule():
+    with simulate_env():
+        assert json.loads(run_main_capture()) == [
+            {"name": "Keychron M5", "serial": "sim-keychron-m5", "blocked": True, "vid": "3434", "pid": "d028",
+             "unblock_command": rhd.udev_unblock_command(0x3434), "deviceType": "mouse"},
+            {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "blocked": True, "vid": "28de", "pid": "1304",
+             "unblock_command": rhd.udev_unblock_command(0x28de), "deviceType": "gamepad"},
+        ]
+
+def test_simulate_m5_reports_after_its_rule():
+    with simulate_env() as sim_dir:
+        with open(os.path.join(sim_dir, "70-batterywatch-hid-3434.rules"), "w") as f:
+            f.write(rhd.UDEV_HEADER + "\n" + rhd.udev_rule_for(0x3434) + "\n")
+        assert json.loads(run_main_capture()) == [
+            {"name": "Keychron M5", "serial": "sim-keychron-m5", "percentage": 88, "charging": False, "deviceType": "mouse"},
+            {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "blocked": True, "vid": "28de", "pid": "1304",
+             "unblock_command": rhd.udev_unblock_command(0x28de), "deviceType": "gamepad"},
+        ]
+
+def test_simulate_both_report_after_both_rules():
+    with simulate_env() as sim_dir:
+        for vid in (0x3434, 0x28de):
+            with open(os.path.join(sim_dir, rhd.udev_rule_path(vid).rsplit("/", 1)[1]), "w") as f:
+                f.write(rhd.UDEV_HEADER + "\n" + rhd.udev_rule_for(vid) + "\n")
+        assert json.loads(run_main_capture()) == [
+            {"name": "Keychron M5", "serial": "sim-keychron-m5", "percentage": 88, "charging": False, "deviceType": "mouse"},
+            {"name": "Steam Controller 2", "serial": "sim-steam-controller-2", "percentage": 85, "charging": True, "deviceType": "gamepad"},
+        ]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# SC2: stream read (no request)
+# ══════════════════════════════════════════════════════════════════════════
+def test_sc2_stream_read():
+    install_sc2_scenario()
+    set_sc2_report(state=0x02, pct=85)
+    sdev = rhd.find_devices()[0]
+    assert sdev.desc.name == "Steam Controller 2"
+    assert rhd.read_status(sdev) == {"percentage": 85, "charging": True}, "state=0x02 puck -> charging"
+    assert scenario["writes"] == [], f"stream: no request written, got {scenario['writes']!r}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Helper as a subprocess (real run, no device)
+# ══════════════════════════════════════════════════════════════════════════
+def test_helper_compiles():
+    assert py_compile.compile(HELPER, doraise=True) is not None
+
+def test_helper_real_run_emits_valid_json():
+    # subprocess needs the REAL os.read/write/close/listdir and select.poll - the
+    # scenario monkey-patches live on the shared os/select modules and would corrupt
+    # pipe I/O, so restore them around this real-world run, then re-patch.
+    os.open, os.write, os.read, os.close = real_osopen, real_oswrite, real_osread, real_osclose
+    os.listdir = real_listdir
+    select.poll = real_poll
+    try:
+        r = subprocess.run([sys.executable, HELPER], capture_output=True, text=True,
+                           cwd=os.path.dirname(HELPER), timeout=30)
+    finally:
+        patch_module()
+    assert r.returncode == 0, f"rc={r.returncode} stderr={r.stderr!r}"
+    parsed = json.loads(r.stdout.strip())
+    assert isinstance(parsed, list), f"stdout={r.stdout.strip()!r}"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Zero-dependency runner: collects the test_*() functions above and runs them
+# in definition order. pytest discovers the same functions if it's installed.
+# ══════════════════════════════════════════════════════════════════════════
+def main():
+    tests = [(name, fn) for name, fn in globals().items() if name.startswith("test_") and callable(fn)]
+    failed = []
+    for name, fn in tests:
+        try:
+            fn()
+        except AssertionError as e:
+            failed.append(name)
+            print(f"FAIL  {name}")
+            if e.args:
+                print(f"      {e.args[0]}")
+        except Exception as e:
+            failed.append(name)
+            print(f"ERROR {name}: {type(e).__name__}: {e}")
+        else:
+            print(f"PASS  {name}")
+    passed = len(tests) - len(failed)
+    print(f"\n{passed}/{len(tests)} checks passed")
+    sys.exit(1 if failed else 0)
+
+if __name__ == "__main__":
+    main()

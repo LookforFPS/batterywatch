@@ -31,7 +31,7 @@
 | **OpenLinkHub** | Corsair and other devices managed by [OpenLinkHub](https://github.com/jurkovic-nikola/OpenLinkHub) |
 | **OpenRazer** | Razer peripherals via [OpenRazer](https://openrazer.github.io/) |
 | **KDE Connect** | Battery levels of paired KDE Connect devices (phones, tablets, etc), with easy unpair action |
-| **HID Devices** | Peripherals read directly via Linux HID (currently supports Steam Controller 2) |
+| **HID Devices** | Peripherals read directly via Linux HID (currently supports Steam Controller 2 & Keychron M5) |
 
 ## Installation
 

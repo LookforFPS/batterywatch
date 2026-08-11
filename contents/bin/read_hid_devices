@@ -1,14 +1,27 @@
 #!/usr/bin/env python3
-"""
-read_hid_devices - HID battery reader
+"""read_hid_devices - HID battery reader for the BatteryWatch plasmoid.
 
-Author: TheDogORB <thedogorb@proton.me>
+Scans /sys/class/hidraw for known devices (Keychron M5, Steam Controller 2...),
+reads their battery over hidraw and prints JSON for HIDDevicesProvider.qml:
+
+  {"name", "serial", "percentage", "charging", "deviceType"} for a readable
+  device, or {"name", "serial", "blocked": true, "vid", "pid",
+  "unblock_command", "deviceType"} for one that needs a udev rule.
+
+Organized in sections mirroring the concerns:
+  schema  - report schemas + generic decoder (pure)
+  devices - the registry of known devices (pure data)
+  udev    - udev rule files/commands for blocked devices
+  hid     - sysfs discovery + hidraw I/O
+  cli     - JSON output consumed by the widget
 """
 
+import json
 import os
+import re
 import select
+import sys
 import time
-
 from enum import Enum
 from typing import NamedTuple, Callable
 
@@ -16,6 +29,14 @@ TIMEOUT_SEC = 10
 MAX_DEVICES = 8
 HID_BUFFER_SIZE = 64
 
+# Request-response devices (e.g. Keychron M5) reply within milliseconds; don't
+# stall the widget for the full stream timeout, especially when the mouse sleeps.
+REQUEST_TIMEOUT_SEC = 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# schema - report schemas + generic decoder (pure, no hardware I/O)
+# ══════════════════════════════════════════════════════════════════════════
 # Device types, based on DeviceUtils.js
 class DeviceType(Enum):
     GAMEPAD     = "gamepad"
@@ -36,7 +57,7 @@ class DataPos(NamedTuple):
 
 # Points to a location from where a connection state is read out
 # states holds a dict of possible states in which device can be, if not present defaults to charging = false
-# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state 
+# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state
 class ChargingStates(NamedTuple):
     pos:    DataPos         # Location of state ID byte
     states: dict[int, bool] # ID -> charging True/False; missing ID defaults to False
@@ -45,146 +66,33 @@ class ChargingStates(NamedTuple):
 # InputStream is being sent via a msg every few seconds (~3.5 for SC2)
 # This power scheme supports only devices which periodically send its battery state -> Steam Controller, DualShock etc.
 class InputStreamSchema(NamedTuple):
-    charge:             DataPos                         # Where to look for battery charge
-    charge_range:       tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
-    status:             DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
+    charge:       DataPos                         # Where to look for battery charge
+    charge_range: tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
+    status:       DataPos | ChargingStates | None # Charging: direct byte (DataPos), derived from state ID (ChargingStates), or unsupported (None)
 
-# Main class
-# Represents a device, and holds all the important data used for reading it out
-class Device(NamedTuple):
-    name:           str                         # Device name e.g. "Steam Controller"
-    device_type:    DeviceType                  # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
-    vid:            int                         # Vendor ID
-    variants:       tuple[DeviceVariant, ...]   # VID, PID, iface used by device - used as path for where to look up device data
-    source:         InputStreamSchema           # How power is read, currently only InputStreamSchema exits
-    parse:          Callable | None             # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
+    def valid(self, buf) -> bool:
+        return True
 
-# List of known/supported devices
-# iface = None means that any interface contains battery data
-KNOWN_DEVICES = [
-    Device(
-        name="Steam Controller 2",
-        device_type=DeviceType.GAMEPAD,
-        vid=0x28DE,
-        variants=(
-            DeviceVariant(0x1302, 0),   #  28DE:1302 = USB direct
-                                        #  28DE:1303 = Bluetooth >>> HANDLED BY UPOWER MODULE <<<
-            DeviceVariant(0x1304, 2)    #  28DE:1304 = Wireless via puck dongle
-        ),
-        #  byte[0] = 0x43 (report ID), byte[1] = connection state, byte[2] = battery percentage
-        source = InputStreamSchema(
-            charge = DataPos(0x43, 2),
-            charge_range = None,
-            status = ChargingStates(
-                pos = DataPos(0x43, 1),
-                states = {
-                    0x01: False,    # Wireless
-                    0x02: True,     # Puck
-                    0x03: True,     # Transition in between charging->not charging and vice versa
-                    0x04: True,     # USB
-                }
-            )
-        ),
-        parse=None,
-    )
-]
+    def poll_timeout(self) -> float:
+        return TIMEOUT_SEC
 
-# Ptr to a location/device that has been found
-class FoundDevice(NamedTuple):
-    devpath: str
-    serial:  str
-    desc:    Device
+# Device responds to a request packet with a battery report (e.g. Keychron M5)
+class RequestSchema(NamedTuple):
+    charge:       DataPos
+    charge_range: tuple[int, int] | None
+    status:       DataPos | ChargingStates | None
+    request:      bytes                           # Packet to send before reading; device replies with battery report
+    timeout:      float = REQUEST_TIMEOUT_SEC     # Max wait for the reply; devices answer in milliseconds
 
-# Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
-def parse_uevent(path):
-    vid = 0
-    pid = 0
-    iface = -1
-    serial = "unknown-hid"
-    phys = ""
+    def valid(self, buf) -> bool:
+        # A real battery reply echoes the request's command byte, which tells it
+        # apart from unrelated reports on the same interface.
+        if len(self.request) < 2:
+            return True
+        return buf[0] == self.charge.report_id and buf[1] == self.request[1]
 
-    try:
-        with open(path, "r") as file:
-            for line in file:
-                line = line.rstrip("\r\n")
-                # Read out VID+PID
-                if line.startswith("HID_ID="):
-                    parts = line[7:].split(":")
-                    if len(parts) == 3:
-                        try:
-                            vid = int(parts[1], 16)
-                            pid = int(parts[2], 16)
-                        except ValueError:
-                            pass
-                # Read out physical device path + interface
-                elif line.startswith("HID_PHYS="):
-                    idx = line.find("/input")
-                    if idx >= 0:
-                        phys = line[9:idx]      # shared across a device's interfaces
-                        digits = ""
-                        for ch in line[idx + 6:]:
-                            if not ch.isdigit():
-                                break
-                            digits += ch
-                        iface = int(digits) if digits else -1
-                    else:
-                        phys = line[9:]
-                # Read out serial
-                elif line.startswith("HID_UNIQ="):
-                    val = line[9:]
-                    if val:
-                        serial = val
-    except OSError:
-        return None
-    return vid, pid, iface, serial, phys
-
-# Returns the matching Device for a given vid/pid/iface, or None
-def match_device(vid, pid, iface):
-    for dev in KNOWN_DEVICES:
-        if vid != dev.vid:
-            continue
-        for variant in dev.variants:
-            if pid != variant.pid:
-                continue
-            # iface = None in a variant means any interface contains batt data
-            if variant.iface is not None and iface != variant.iface:
-                continue
-            return dev
-    return None
-
-# Goes through /sys/class/hidraw* and collects all known interfaces
-def find_devices():
-    devices = []
-    seen = set()
-    try:
-        entries = os.listdir("/sys/class/hidraw")
-    except OSError:
-        return devices
-
-    for name in entries:
-        if len(devices) >= MAX_DEVICES:
-            break
-        if name.startswith("."):
-            continue
-
-        parsed = parse_uevent(f"/sys/class/hidraw/{name}/device/uevent")
-        if parsed is None:
-            continue
-        vid, pid, iface, serial, phys = parsed
-
-        desc = match_device(vid, pid, iface)
-        if desc is None:
-            continue
-
-        # One entry per physical device: iface=None matches every interface, so
-        # skip ones already taken (phys is shared across a device's interfaces)
-        key = (desc.name, phys or name)
-        if key in seen:
-            continue
-        seen.add(key)
-
-        devices.append(FoundDevice(f"/dev/{name}", serial, desc))
-    return devices
+    def poll_timeout(self) -> float:
+        return self.timeout
 
 # All DataPos referenced by a schema
 def schema_positions(schema):
@@ -223,22 +131,294 @@ def interpret(schema, buffers):
     return {"percentage": percentage, "charging": charging}
 
 
-# Reads a device's power status: waits for the report(s) the schema needs or for the
-# TIMEOUT_SEC deadline. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
+# ══════════════════════════════════════════════════════════════════════════
+# devices - the registry of known/supported devices (pure data)
+# ══════════════════════════════════════════════════════════════════════════
+# Main class
+# Represents a device, and holds all the important data used for reading it out
+class Device(NamedTuple):
+    name:           str                                  # Device name e.g. "Steam Controller"
+    device_type:    DeviceType                           # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
+    vid:            int                                  # Vendor ID
+    variants:       tuple[DeviceVariant, ...]            # VID, PID, iface used by device - used as path for where to look up device data
+    source:         InputStreamSchema | RequestSchema    # How power is read
+    parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
+
+# List of known/supported devices
+# iface = None means that any interface contains battery data
+KNOWN_DEVICES = [
+    Device(
+        name="Keychron M5",
+        device_type=DeviceType.MOUSE,
+        vid=0x3434,
+        variants=(
+            DeviceVariant(0xd028, 4),   # Ultra-Link 8K receiver (wireless), battery on vendor interface 4
+            DeviceVariant(0xd048, 4),   # M5 wired over USB-C, same vendor interface 4
+        ),
+        # Sending request 0xB3:06 makes the device reply with report 0xB4,
+        # command echo 0x06, battery % at byte 20 (per keychron-battery-dkms
+        # and StarPepe's raw reply). Interface 4 is the only one that answers.
+        source = RequestSchema(
+            charge   = DataPos(0xb4, 20),
+            charge_range = None,
+            status   = None,
+            request  = bytes.fromhex('b306') + b'\x00' * 62,
+            timeout  = REQUEST_TIMEOUT_SEC,
+        ),
+        # Keychron M5: byte 20 of the 0xB4 reply is the level (0-100) when
+        # discharging and "128 + level" while charging (the 0x80 flag bit is
+        # set), so charging level = raw - 128; the 0x87/0x89 bytes seen on real
+        # devices decode to 7%/9%, consistent with the 6% discharge observed
+        # just before.
+        parse=lambda buffers: (
+            {"percentage": max(0, min(buffers[0xB4][20] - 128, 100)), "charging": True}
+            if buffers[0xB4][20] > 100
+            else {"percentage": buffers[0xB4][20], "charging": False}
+        ),
+    ),
+    Device(
+        name="Steam Controller 2",
+        device_type=DeviceType.GAMEPAD,
+        vid=0x28DE,
+        variants=(
+            DeviceVariant(0x1302, 0),   #  28DE:1302 = USB direct
+                                        #  28DE:1303 = Bluetooth >>> HANDLED BY UPOWER MODULE <<<
+            DeviceVariant(0x1304, 2)    #  28DE:1304 = Wireless via puck dongle
+        ),
+        #  byte[0] = 0x43 (report ID), byte[1] = connection state, byte[2] = battery percentage
+        source = InputStreamSchema(
+            charge = DataPos(0x43, 2),
+            charge_range = None,
+            status = ChargingStates(
+                pos = DataPos(0x43, 1),
+                states = {
+                    0x01: False,    # Wireless
+                    0x02: True,     # Puck
+                    0x03: True,     # Transition in between charging->not charging and vice versa
+                    0x04: True,     # USB
+                }
+            )
+        ),
+        parse=None,
+    )
+]
+
+# Ptr to a location/device that has been found
+class FoundDevice(NamedTuple):
+    devpath: str
+    serial:  str
+    desc:    Device
+    pid:     int       # Product ID that actually matched (from sysfs)
+
+# ══════════════════════════════════════════════════════════════════════════
+# hid - sysfs discovery + hidraw I/O
+# ══════════════════════════════════════════════════════════════════════════
+# HID_ID=<bus>:<vendor>:<product> e.g. "0003:00003434:0000D028" -> vendor, product
+_HID_ID_RE = re.compile(r"[0-9a-fA-F]+:([0-9a-fA-F]+):([0-9a-fA-F]+)$")
+# HID_PHYS=<phys-path>/input<iface> e.g. "usb-0000:00:14.0-11/input4" -> phys, iface
+_HID_PHYS_RE = re.compile(r"(.*)/input(\d*)")
+
+# Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
+def parse_uevent(path):
+    try:
+        with open(path, "r") as file:
+            fields = {}
+            for line in file:
+                line = line.rstrip("\r\n")
+                if "=" in line:
+                    key, _, value = line.partition("=")
+                    fields[key] = value
+    except OSError:
+        return None
+
+    vid = 0
+    pid = 0
+    m = _HID_ID_RE.match(fields.get("HID_ID", ""))
+    if m:
+        vid = int(m.group(1), 16)
+        pid = int(m.group(2), 16)
+
+    # HID_PHYS holds the physical device path plus its interface: ".../input4"
+    iface = -1
+    phys = fields.get("HID_PHYS", "")
+    m = _HID_PHYS_RE.match(phys)
+    if m:
+        phys = m.group(1)   # shared across a device's interfaces
+        iface = int(m.group(2)) if m.group(2) else -1
+
+    serial = fields.get("HID_UNIQ", "") or "unknown-hid"
+
+    return vid, pid, iface, serial, phys
+
+# Returns the matching Device for a given vid/pid/iface, or None
+def match_device(vid, pid, iface):
+    for dev in KNOWN_DEVICES:
+        if vid != dev.vid:
+            continue
+        for variant in dev.variants:
+            if pid != variant.pid:
+                continue
+            # iface = None in a variant means any interface contains batt data
+            if variant.iface is not None and iface != variant.iface:
+                continue
+            return dev
+    return None
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# udev - udev rule files/commands for blocked devices
+# ══════════════════════════════════════════════════════════════════════════
+# A device whose hidraw node can't be opened for the access level its schema
+# needs (missing udev rule) is reported as blocked; this section builds the
+# exact rule file and the exact terminal command the user runs to grant access.
+#
+# Each known device (e.g. "Keychron M5") gets ONE rule file that covers ALL of
+# its connection variants (wireless dongle + wired USB), so granting permission
+# once fixes every way the same device can connect - which interface the battery
+# happens to be on is an implementation detail the user shouldn't care about.
+# The file is wholly ours and can be removed with a plain `rm` (no risk of
+# clobbering user-written rules, no merge bookkeeping). The helper never
+# installs rules itself: it emits the exact terminal command on the blocked
+# device's JSON as "unblock_command", and the user runs it on their own terms
+# (no pkexec involved).
+UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the "Copy command" button.'
+
+# Where generated rule files are written; tests redirect this to a sandbox dir.
+UDEV_RULES_DIR = "/etc/udev/rules.d"
+
+def udev_rule_path(vid):
+    return f"{UDEV_RULES_DIR}/70-batterywatch-hid-{vid:04x}.rules"
+
+# Write access needed (RequestSchema sends a packet) vs. read-only stream
+def _udev_mode_for(vid):
+    for dev in KNOWN_DEVICES:
+        if vid == dev.vid:
+            return "0660" if isinstance(dev.source, RequestSchema) else "0440"
+    return "0660"
+
+# One udev rule line per connection variant of the device
+def udev_rule_for(vid):
+    lines = [
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'ATTRS{{idProduct}}=="{variant.pid:04x}", '
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
+        for dev in KNOWN_DEVICES if dev.vid == vid
+        for variant in dev.variants
+    ]
+    if lines:
+        return "\n".join(lines)
+    # Unknown device: a vid-wide rule still helps the owner track it down
+    return (
+        f'SUBSYSTEM=="hidraw", ATTRS{{idVendor}}=="{vid:04x}", '
+        f'MODE="{_udev_mode_for(vid)}", TAG+="uaccess", TAG+="udev-acl"'
+    )
+
+# True when the udev rule for this device (all its variants) is installed
+def _rule_exists(vid):
+    return os.path.exists(udev_rule_path(vid))
+
+# The exact shell command a user can paste to authorize this one device. The
+# heredoc is wrapped in `sudo sh -c '...'`: fish rejects `<<EOF` redirections in
+# its own command line, but it treats this as a single quoted argument, so the
+# same readable heredoc pastes cleanly in sh, bash, zsh and fish. The rule body
+# holds no shell metacharacters ($, backticks), so the unquoted delimiter is safe.
+def udev_unblock_command(vid):
+    path = udev_rule_path(vid)
+    body = "\n".join([UDEV_HEADER] + udev_rule_for(vid).split("\n"))
+    return (
+        f"sudo sh -c 'tee {path} >/dev/null <<EOF\n"
+        f"{body}\n"
+        f"EOF'\n"
+        f"sudo udevadm control --reload-rules && sudo udevadm trigger"
+    )
+
+# Goes through /sys/class/hidraw* and collects all known interfaces
+def find_devices():
+    devices = []
+    seen = set()
+    try:
+        entries = os.listdir("/sys/class/hidraw")
+    except OSError:
+        return devices
+
+    for name in entries:
+        if len(devices) >= MAX_DEVICES:
+            break
+        if name.startswith("."):
+            continue
+
+        parsed = parse_uevent(f"/sys/class/hidraw/{name}/device/uevent")
+        if parsed is None:
+            continue
+        vid, pid, iface, serial, phys = parsed
+
+        desc = match_device(vid, pid, iface)
+        if desc is None:
+            continue
+
+        # One entry per physical device: iface=None matches every interface, so
+        # skip ones already taken (phys is shared across a device's interfaces)
+        key = (desc.name, phys or name)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        # Fall back to the physical path when the device reports no serial, so
+        # multiple identical dongles get distinct ids.
+        if serial == "unknown-hid":
+            serial = phys or name
+
+        devices.append(FoundDevice(f"/dev/{name}", serial, desc, pid))
+    return devices
+
+# True when the device is present but its hidraw node can't be opened for the
+# access level the schema needs (missing udev rule). Asleep devices *can* be
+# opened, so this only fires for a genuine permissions problem.
+def is_blocked(dev):
+    needs_write = isinstance(dev.desc.source, RequestSchema)
+    flags = os.O_RDWR if needs_write else os.O_RDONLY
+    try:
+        fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
+        os.close(fd)
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+# Opens a hidraw device, sends request packet if schema requires it. Returns fd or None.
+def open_device(dev, schema):
+    needs_write = isinstance(schema, RequestSchema)
+    flags = os.O_RDWR if needs_write else os.O_RDONLY
+    try:
+        fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
+    except OSError:
+        return None
+
+    if needs_write:
+        try:
+            os.write(fd, schema.request)
+        except OSError:
+            os.close(fd)
+            return None
+
+    return fd
+
+# Reads a device's power status: waits for the report(s) the schema needs or for
+# the schema's timeout. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
 # utilisation. Returns status dict {"percentage", "charging"} or None.
-def read_status(dev):
+def read_status_hw(dev):
     schema = dev.desc.source
     needed = needed_reports(schema)
 
-    try:
-        fd = os.open(dev.devpath, os.O_RDONLY | os.O_NONBLOCK)
-    except OSError:
+    fd = open_device(dev, schema)
+    if fd is None:
         return None
 
     try:
         poller = select.poll()
         poller.register(fd, select.POLLIN)
-        deadline = time.monotonic() + TIMEOUT_SEC
+        deadline = time.monotonic() + schema.poll_timeout()
         buffers = {}
 
         while True:
@@ -267,6 +447,8 @@ def read_status(dev):
             report_id = buf[0]
             if report_id not in needed or len(buf) < needed[report_id]:
                 continue
+            if not schema.valid(buf):
+                continue
 
             buffers[report_id] = buf
             # interpret every report of a schema
@@ -278,26 +460,65 @@ def read_status(dev):
     finally:
         os.close(fd)
 
-# Minimal JSON string escape, so " and \ don't break the struct
-def jstr(s):
-    return s.replace("\\", "\\\\").replace('"', '\\"')
+# Stateless per run: reports only a CURRENT reading. A device that doesn't
+# answer simply isn't emitted, so the widget drops it on the next poll - same
+# behaviour as the upower-based providers. No state is kept between runs.
+def read_status(dev):
+    return read_status_hw(dev)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# cli - JSON output consumed by the widget
+# ══════════════════════════════════════════════════════════════════════════
+# Testing mode (no hardware): fake devices that mirror real behavior - each one
+# looks blocked until its udev rule exists, then reports a battery.
+_SIMULATE_DEVICES = [
+    ("Keychron M5", "sim-keychron-m5", 0x3434, "d028", "mouse", 88, False),
+    ("Steam Controller 2", "sim-steam-controller-2", 0x28DE, "1304", "gamepad", 85, True),
+]
+
+def _simulate():
+    out = []
+    for name, serial, vid, pid, dtype, pct, charging in _SIMULATE_DEVICES:
+        if _rule_exists(vid):
+            out.append({"name": name, "serial": serial, "percentage": pct,
+                        "charging": charging, "deviceType": dtype})
+        else:
+            out.append({"name": name, "serial": serial, "blocked": True,
+                        "vid": f"{vid:04x}", "pid": pid,
+                        "unblock_command": udev_unblock_command(vid),
+                        "deviceType": dtype})
+    return out
+
+# Turns one found device into its JSON dict, or None when it neither reported
+# a battery nor is blocked (e.g. present but asleep).
+def _device_entry(dev):
+    status = read_status(dev)
+    if status is not None:
+        return {"name": dev.desc.name, "serial": dev.serial,
+                "percentage": status["percentage"], "charging": status["charging"],
+                "deviceType": dev.desc.device_type.value}
+    if is_blocked(dev):
+        # Present but no permission to open: report it so the widget can offer
+        # to copy the udev command for this one device.
+        # "unblock_command" is the exact terminal command for this one device.
+        return {"name": dev.desc.name, "serial": dev.serial, "blocked": True,
+                "vid": f"{dev.desc.vid:04x}", "pid": f"{dev.pid:04x}",
+                "unblock_command": udev_unblock_command(dev.desc.vid),
+                "deviceType": dev.desc.device_type.value}
+    return None
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--simulate":
+        print(json.dumps(_simulate()))
+        sys.exit(0)
+
     parts = []
     for dev in find_devices():
-        status = read_status(dev)
-        if status is None:
-            continue
-        parts.append(
-            '{"name":"%s","serial":"%s","percentage":%d,"charging":%s,"deviceType":"%s"}' % (
-                jstr(dev.desc.name),
-                jstr(dev.serial),
-                status["percentage"],
-                "true" if status["charging"] else "false",
-                jstr(dev.desc.device_type.value),
-            )
-        )
-    print("[" + ",".join(parts) + "]")
+        entry = _device_entry(dev)
+        if entry is not None:
+            parts.append(entry)
+    print(json.dumps(parts))
 
 if __name__ == "__main__":
     main()
