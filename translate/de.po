@@ -1,4 +1,4 @@
-# Translation of batterywatch in german
+# Translation of batterywatch in German
 # Copyright (C) 2026
 # This file is distributed under the same license as the batterywatch package.
 # LookforFPS <me@lookforfps.dev>, 2026.
