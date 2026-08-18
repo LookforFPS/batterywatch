@@ -13,6 +13,7 @@
         "Category[pl]": "Szczegóły Systemowe",
         "Category[he]": "מידע על המערכת",
         "Description": "Monitor battery levels of all connected devices",
+        "Description[de]": "Überwacht die Akkustände aller verbundenen Geräte",
         "Description[hu]": "Csatlakoztatott eszközök akkumulátorszintjének megjelenítése",
         "Description[pl]": "Monitoruj poziom baterii wszystkich podłączonych urządzeń",
         "Description[he]": "צפה באחוז הסוללה של המכשירים המחוברים",
