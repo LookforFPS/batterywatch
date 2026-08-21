@@ -49,6 +49,7 @@ class DeviceType(Enum):
 class DeviceVariant(NamedTuple):
     pid:    int         # Product ID
     iface:  int | None  # Interface
+    source: InputStreamSchema | RequestSchema | None = None  # Optional schema overriding the device default
 
 # A helper class; holds where a specific data byte is stored: report/msg ID + data byte offset
 class DataPos(NamedTuple):
@@ -83,10 +84,13 @@ class RequestSchema(NamedTuple):
     status:       DataPos | ChargingStates | None
     request:      bytes                           # Packet to send before reading; device replies with battery report
     timeout:      float = REQUEST_TIMEOUT_SEC     # Max wait for the reply; devices answer in milliseconds
+    reply_prefix: bytes | None = None             # Expected reply prefix; None keeps the common report-ID + command echo check
 
     def valid(self, buf) -> bool:
         # A real battery reply echoes the request's command byte, which tells it
         # apart from unrelated reports on the same interface.
+        if self.reply_prefix is not None:
+            return len(buf) >= len(self.reply_prefix) and buf[:len(self.reply_prefix)] == self.reply_prefix
         if len(self.request) < 2:
             return True
         return buf[0] == self.charge.report_id and buf[1] == self.request[1]
@@ -200,6 +204,67 @@ KNOWN_DEVICES = [
             )
         ),
         parse=None,
+    ),
+    Device(
+        name="ROG Azoth",
+        device_type=DeviceType.KEYBOARD,
+        vid=0x0B05,
+        variants=(
+            # Standard Azoth transports answer battery queries only on input1.
+            # Match the exact HID_PHYS suffix so no command is sent to other
+            # keyboard collections.
+            # Wired USB exposes a 64-byte vendor report without a report ID.
+            # Linux therefore sees 12:01 at bytes 0:1; every payload offset
+            # is one lower than in the report-ID-prefixed protocol.
+            DeviceVariant(
+                0x1A83, 1,
+                RequestSchema(
+                    charge=DataPos(0x12, 5),
+                    charge_range=None,
+                    status=ChargingStates(
+                        pos=DataPos(0x12, 8),
+                        states={0x01: True},
+                    ),
+                    request=bytes.fromhex("1201") + b"\x00" * 62,
+                    timeout=REQUEST_TIMEOUT_SEC,
+                    reply_prefix=bytes.fromhex("1201"),
+                ),
+            ),
+            # Standard Azoth 2.4 GHz dongle (PID 1A85).
+            # OMNI receivers are distinct and use the 1ACE profile below.
+            DeviceVariant(0x1A85, 1),
+            # The OMNI receiver exposes keyboard, mouse, vendor, and media
+            # collections.  Its vendor collection is input2 (mi_02&col02),
+            # and uses report ID 2 with 64-byte reports.
+            DeviceVariant(
+                0x1ACE, 2,
+                RequestSchema(
+                    charge=DataPos(0x02, 6),
+                    charge_range=None,
+                    status=ChargingStates(
+                        pos=DataPos(0x02, 9),
+                        states={0x01: True},
+                    ),
+                    request=bytes.fromhex("021201") + b"\x00" * 61,
+                    timeout=REQUEST_TIMEOUT_SEC,
+                    reply_prefix=bytes.fromhex("021201"),
+                ),
+            ),
+        ),
+        # The 65-byte 00:12:01 request is echoed by the battery response;
+        # byte 6 is percentage and only state 1 at byte 9 means charging.
+        source=RequestSchema(
+            charge=DataPos(0x00, 6),
+            charge_range=None,
+            status=ChargingStates(
+                pos=DataPos(0x00, 9),
+                states={0x01: True},
+            ),
+            request=bytes.fromhex("001201") + b"\x00" * 62,
+            timeout=REQUEST_TIMEOUT_SEC,
+            reply_prefix=bytes.fromhex("001201"),
+        ),
+        parse=None,
     )
 ]
 
@@ -209,6 +274,7 @@ class FoundDevice(NamedTuple):
     serial:  str
     desc:    Device
     pid:     int       # Product ID that actually matched (from sysfs)
+    source:  InputStreamSchema | RequestSchema
 
 # ══════════════════════════════════════════════════════════════════════════
 # hid - sysfs discovery + hidraw I/O
@@ -217,6 +283,37 @@ class FoundDevice(NamedTuple):
 _HID_ID_RE = re.compile(r"[0-9a-fA-F]+:([0-9a-fA-F]+):([0-9a-fA-F]+)$")
 # HID_PHYS=<phys-path>/input<iface> e.g. "usb-0000:00:14.0-11/input4" -> phys, iface
 _HID_PHYS_RE = re.compile(r"(.*)/input(\d*)")
+_AZOTH_IDS = {(0x0B05, 0x1A83), (0x0B05, 0x1A85), (0x0B05, 0x1ACE)}
+
+def printable_serial(value):
+    """Keep the printable prefix of a device-provided serial string."""
+    value = value.strip()
+    for index, char in enumerate(value):
+        if not char.isprintable():
+            value = value[:index]
+            break
+    return value or None
+
+# Returns the USB device serial for this HID node when its parent exposes one.
+# Some devices append malformed bytes to their string descriptor, so retain
+# only its printable prefix before using it as the widget's device identity.
+def usb_serial(path, vid, pid):
+    current = os.path.realpath(os.path.dirname(path))
+    while current != os.path.dirname(current):
+        try:
+            with open(f"{current}/idVendor", "r") as file:
+                parent_vid = int(file.read().strip(), 16)
+            with open(f"{current}/idProduct", "r") as file:
+                parent_pid = int(file.read().strip(), 16)
+            if parent_vid == vid and parent_pid == pid:
+                with open(f"{current}/serial", "r") as file:
+                    serial = printable_serial(file.read())
+                if serial:
+                    return serial
+        except (OSError, ValueError):
+            pass
+        current = os.path.dirname(current)
+    return None
 
 # Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
 def parse_uevent(path):
@@ -246,11 +343,20 @@ def parse_uevent(path):
         phys = m.group(1)   # shared across a device's interfaces
         iface = int(m.group(2)) if m.group(2) else -1
 
-    serial = fields.get("HID_UNIQ", "") or "unknown-hid"
+    if (vid, pid) in _AZOTH_IDS:
+        # Azoth USB descriptors append malformed bytes to its serial. Limit
+        # the workaround to these profiles so existing HID identities retain
+        # their previous behavior.
+        serial = (usb_serial(path, vid, pid)
+                  or printable_serial(fields.get("HID_UNIQ", ""))
+                  or "unknown-hid")
+    else:
+        serial = fields.get("HID_UNIQ", "") or "unknown-hid"
 
     return vid, pid, iface, serial, phys
 
-# Returns the matching Device for a given vid/pid/iface, or None
+# Returns the matching Device and transport variant for a given vid/pid/iface,
+# or None.  A variant may override the device's default transport schema.
 def match_device(vid, pid, iface):
     for dev in KNOWN_DEVICES:
         if vid != dev.vid:
@@ -261,7 +367,7 @@ def match_device(vid, pid, iface):
             # iface = None in a variant means any interface contains batt data
             if variant.iface is not None and iface != variant.iface:
                 continue
-            return dev
+            return dev, variant
     return None
 
 
@@ -352,9 +458,10 @@ def find_devices():
             continue
         vid, pid, iface, serial, phys = parsed
 
-        desc = match_device(vid, pid, iface)
-        if desc is None:
+        matched = match_device(vid, pid, iface)
+        if matched is None:
             continue
+        desc, variant = matched
 
         # One entry per physical device: iface=None matches every interface, so
         # skip ones already taken (phys is shared across a device's interfaces)
@@ -368,7 +475,7 @@ def find_devices():
         if serial == "unknown-hid":
             serial = phys or name
 
-        devices.append(FoundDevice(f"/dev/{name}", serial, desc, pid))
+        devices.append(FoundDevice(f"/dev/{name}", serial, desc, pid, variant.source or desc.source))
     return devices
 
 # True when the device is present but its hidraw node can't be opened for the
@@ -408,8 +515,12 @@ def open_device(dev, schema):
 # the schema's timeout. O_NONBLOCK + poll() makes it sleep in kernel with 0 CPU
 # utilisation. Returns status dict {"percentage", "charging"} or None.
 def read_status_hw(dev):
-    schema = dev.desc.source
+    schema = dev.source
     needed = needed_reports(schema)
+    # Most devices use 64-byte reports.  Some request-response devices, such
+    # as the ROG Azoth, use a 65-byte report including report ID, so read at
+    # least as much as the schema's request packet.
+    read_size = max(HID_BUFFER_SIZE, len(schema.request)) if isinstance(schema, RequestSchema) else HID_BUFFER_SIZE
 
     fd = open_device(dev, schema)
     if fd is None:
@@ -438,7 +549,7 @@ def read_status_hw(dev):
                 return None
 
             try:
-                buf = os.read(fd, HID_BUFFER_SIZE)
+                buf = os.read(fd, read_size)
             except OSError:
                 return None
             if not buf:
