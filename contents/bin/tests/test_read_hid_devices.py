@@ -9,6 +9,9 @@ sysfs + hidraw devices and verifies every behavior the widget depends on:
                   charging decode, wired d048, no-reply handling (device
                   dropped, stateless per run), blocked reporting, dynamic
                   udev rule generation.
+  Azoth (ROG):    Wired, standard 2.4 GHz, and OMNI request-response
+                  transports; their control-interface targeting, battery and
+                  charging-state decode, blocked reporting, and udev rules.
   SC2 (stream):   battery decode from stream report, charging state, no write.
 
 Written as plain pytest-style test_*() functions so they read like idiomatic
@@ -61,18 +64,25 @@ def load_helper():
 
 
 rhd = load_helper()
+unpatched_usb_serial = rhd.usb_serial
 
 # ══════════════════════════════════════════════════════════════════════════
-# Scenario fakes: swap these globals between the M5 and SC2 scenarios
+# Scenario fakes: swap these globals between the M5, SC2, and Azoth scenarios
 # ══════════════════════════════════════════════════════════════════════════
-scenario = {"uevents": {}, "fake_devs": {}, "reply_fd": None, "reply_buf": bytearray(64), "writes": [], "reads": []}
+scenario = {"uevents": {}, "fake_devs": {}, "reply_fd": None, "reply_buf": bytearray(64),
+            "writes": [], "write_data": [], "reads": [], "read_sizes": []}
 
 def m5_uevent(node, pid="0000D028", name="Keychron Keychron Ultra-Link 8K", iface=4):
     return (f"DRIVER=hid-generic\nHID_ID=0003:00003434:{pid}\n"
             f"HID_NAME={name}\nHID_PHYS=usb-0000:00:14.0-11/input{iface}\nHID_UNIQ=\n")
 
+def azoth_uevent(node, pid="00001ACE", iface=1):
+    return (f"DRIVER=hid-generic\nHID_ID=0003:00000B05:{pid}\n"
+            f"HID_NAME=ROG Azoth\nHID_PHYS=usb-0000:00:14.0-12/input{iface}\n"
+            "HID_UNIQ=azoth-simulated-serial\n")
+
 def fake_open(path, mode="r", *a, **k):
-    if path.startswith("/sys/class/hidraw"):
+    if path.startswith("/sys/class/hidraw") and path.endswith("/uevent"):
         return io.StringIO(scenario["uevents"][path.split("/")[4]])
     return builtins.open(path, mode, *a, **k)
 
@@ -85,10 +95,12 @@ def fake_osopen(path, flags):
 
 def fake_write(fd, data):
     scenario["writes"].append(fd)
+    scenario["write_data"].append(bytes(data))
     return len(data)
 
 def fake_read(fd, size):
     scenario["reads"].append(fd)
+    scenario["read_sizes"].append(size)
     if fd == scenario["reply_fd"]:
         return bytes(scenario["reply_buf"])
     return b""
@@ -134,6 +146,21 @@ def install_sc2_scenario():
     scenario["reply_buf"] = bytearray(16)
     scenario["reply_fd"] = 207
 
+def install_azoth_scenario(pid="00001ACE", with_blocked=False):
+    scenario["uevents"] = {
+        "hidraw7": azoth_uevent("hidraw7", pid, 0),
+        "hidraw8": azoth_uevent("hidraw8", pid, 1),
+        "hidraw9": azoth_uevent("hidraw9", pid, 2),
+    }
+    scenario["fake_devs"] = {f"/dev/{key}": 300 + int(key[-1]) for key in scenario["uevents"]}
+    scenario["deny"] = with_blocked
+    scenario["writes"] = []
+    scenario["write_data"] = []
+    scenario["reads"] = []
+    scenario["read_sizes"] = []
+    scenario["reply_buf"] = bytearray(65)
+    scenario["reply_fd"] = 309 if pid == "00001ACE" else 308
+
 def set_m5_reply(byte20=87, report_id=0xB4, cmd=0x06):
     buf = bytearray(64)
     buf[0] = report_id
@@ -152,8 +179,20 @@ def set_sc2_report(state=0x02, pct=85):
     buf[2] = pct
     scenario["reply_buf"] = buf
 
+def set_azoth_reply(pct=73, state=0x00, prefix=bytes.fromhex("021201")):
+    buf = bytearray(64 if prefix[0] in (0x02, 0x12) else 65)
+    buf[:len(prefix)] = prefix
+    battery_offset = 5 if prefix[0] == 0x12 else 6
+    status_offset = 8 if prefix[0] == 0x12 else 9
+    buf[battery_offset] = pct
+    buf[status_offset] = state
+    scenario["reply_buf"] = buf
+
 def patch_module():
     rhd.open = fake_open
+    # Scenario fixtures provide only hidraw uevent files.  Do not let their
+    # parse_uevent() calls walk the host's real sysfs parent hierarchy.
+    rhd.usb_serial = lambda path, vid, pid: None
     rhd.os.open = fake_osopen
     rhd.os.listdir = lambda *a: list(scenario["uevents"].keys())
     rhd.os.write = fake_write
@@ -205,6 +244,49 @@ patch_module()
 # ══════════════════════════════════════════════════════════════════════════
 # Schema / reference behavior
 # ══════════════════════════════════════════════════════════════════════════
+def test_usb_serial_is_preferred_over_malformed_hid_uniq():
+    root = tempfile.mkdtemp()
+    hid_dir = os.path.join(root, "usb", "1-3", "1-3:1.1", "hid")
+    usb_dir = os.path.dirname(os.path.dirname(hid_dir))
+    os.makedirs(hid_dir)
+    for name, value in (("idVendor", "0b05\n"), ("idProduct", "1a83\n"),
+                        ("serial", "S2MPGDD00YNA\n")):
+        with open(os.path.join(usb_dir, name), "w") as file:
+            file.write(value)
+    assert unpatched_usb_serial(os.path.join(hid_dir, "uevent"), 0x0B05, 0x1A83) == "S2MPGDD00YNA"
+
+def test_parse_uevent_prefers_sanitized_usb_parent_serial():
+    root = tempfile.mkdtemp()
+    hid_dir = os.path.join(root, "usb", "1-3", "1-3:1.1", "hid")
+    usb_dir = os.path.dirname(os.path.dirname(hid_dir))
+    os.makedirs(hid_dir)
+    for name, value in (("idVendor", "0b05\n"), ("idProduct", "1a83\n"),
+                        ("serial", "S2MPGDD00YNA\x18\xbe\n")):
+        with open(os.path.join(usb_dir, name), "w") as file:
+            file.write(value)
+    uevent = os.path.join(hid_dir, "uevent")
+    with open(uevent, "w") as file:
+        file.write("HID_ID=0003:00000B05:00001A83\n"
+                   "HID_PHYS=usb-0000:00:14.0-3/input1\n"
+                   "HID_UNIQ=should-not-win\n")
+
+    saved_usb_serial = rhd.usb_serial
+    rhd.usb_serial = unpatched_usb_serial
+    try:
+        parsed = rhd.parse_uevent(uevent)
+    finally:
+        rhd.usb_serial = saved_usb_serial
+    assert parsed[3] == "S2MPGDD00YNA"
+
+def test_parse_uevent_truncates_invalid_hid_uniq():
+    scenario["uevents"] = {
+        "hidraw42": ("HID_ID=0003:00000B05:00001A83\n"
+                      "HID_PHYS=usb-0000:00:14.0-3/input1\n"
+                      "HID_UNIQ=S2MPGDD00YNA\x18\xbe\n"),
+    }
+    parsed = rhd.parse_uevent("/sys/class/hidraw/hidraw42/device/uevent")
+    assert parsed[3] == "S2MPGDD00YNA"
+
 def test_reference_match():
     # Reference match (github.com/itayavra/batterywatch/issues/5)
     dev = rhd.KNOWN_DEVICES[0]
@@ -212,6 +294,32 @@ def test_reference_match():
     assert dev.source.timeout == 1, "request timeout (reference read 128, 1000ms)"
     assert dev.source.charge == rhd.DataPos(0xB4, 20), "battery byte offset (reference data_array[20])"
     assert dev.variants == (rhd.DeviceVariant(0xD028, 4), rhd.DeviceVariant(0xD048, 4))
+
+def test_azoth_reference_profile():
+    azoths = [dev for dev in rhd.KNOWN_DEVICES if dev.name == "ROG Azoth"]
+    assert len(azoths) == 1, "all Azoth transports belong to one device definition"
+    dev = azoths[0]
+    assert dev.device_type == rhd.DeviceType.KEYBOARD
+    wired, wireless = dev.variants[:2]
+    assert (wired.pid, wired.iface) == (0x1A83, 1)
+    assert wired.source.request == bytes.fromhex("1201") + b"\x00" * 62
+    assert wired.source.reply_prefix == bytes.fromhex("1201")
+    assert wired.source.charge == rhd.DataPos(0x12, 5)
+    assert wired.source.status == rhd.ChargingStates(rhd.DataPos(0x12, 8), {0x01: True})
+    assert wireless == rhd.DeviceVariant(0x1A85, 1)
+    assert dev.source.request == bytes.fromhex("001201") + b"\x00" * 62
+    assert dev.source.reply_prefix == bytes.fromhex("001201")
+    assert dev.source.charge == rhd.DataPos(0x00, 6)
+    assert dev.source.status == rhd.ChargingStates(rhd.DataPos(0x00, 9), {0x01: True})
+
+def test_azoth_omni_reference_profile():
+    dev = next(dev for dev in rhd.KNOWN_DEVICES if dev.name == "ROG Azoth")
+    omni = dev.variants[2]
+    assert (omni.pid, omni.iface) == (0x1ACE, 2)
+    assert omni.source.request == bytes.fromhex("021201") + b"\x00" * 61
+    assert omni.source.reply_prefix == bytes.fromhex("021201")
+    assert omni.source.charge == rhd.DataPos(0x02, 6)
+    assert omni.source.status == rhd.ChargingStates(rhd.DataPos(0x02, 9), {0x01: True})
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -322,6 +430,83 @@ def test_wired_d048_found_and_decoded():
     devs = rhd.find_devices()
     assert [d.devpath for d in devs] == ["/dev/hidraw6"], f"found: {[d.devpath for d in devs]!r}"
     assert rhd.read_status(devs[0]) == {"percentage": 2, "charging": True}, "byte20=130 -> 2%"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# ROG Azoth: wired, standard 2.4 GHz, and OMNI request-response transports
+# ══════════════════════════════════════════════════════════════════════════
+def test_azoth_discovery_targets_control_interface_only():
+    install_azoth_scenario()
+    devs = rhd.find_devices()
+    assert [dev.devpath for dev in devs] == ["/dev/hidraw9"]
+    assert devs[0].serial == "azoth-simulated-serial"
+    assert devs[0].pid == 0x1ACE
+
+def test_azoth_wired_and_wireless_variants_are_found():
+    for pid, prefix in (("00001A83", bytes.fromhex("1201")),
+                        ("00001A85", bytes.fromhex("001201"))):
+        install_azoth_scenario(pid=pid)
+        set_azoth_reply(prefix=prefix)
+        devs = rhd.find_devices()
+        assert len(devs) == 1
+        assert rhd.read_status(devs[0]) == {"percentage": 73, "charging": False}
+
+def test_azoth_wired_request_uses_64_byte_unprefixed_report():
+    install_azoth_scenario(pid="00001A83")
+    set_azoth_reply(prefix=bytes.fromhex("1201"))
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 73, "charging": False}
+    assert scenario["writes"] == [308]
+    assert scenario["write_data"] == [bytes.fromhex("1201") + b"\x00" * 62]
+    assert scenario["read_sizes"] == [64]
+
+def test_azoth_wireless_request_is_one_padded_65_byte_report():
+    install_azoth_scenario(pid="00001A85")
+    set_azoth_reply(prefix=bytes.fromhex("001201"))
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 73, "charging": False}
+    assert scenario["writes"] == [308]
+    assert scenario["write_data"] == [bytes.fromhex("001201") + b"\x00" * 62]
+    assert scenario["read_sizes"] == [65]
+
+def test_azoth_omni_request_uses_vendor_report_id_and_64_bytes():
+    install_azoth_scenario()
+    set_azoth_reply()
+    assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": 73, "charging": False}
+    assert scenario["writes"] == [309]
+    assert scenario["write_data"] == [bytes.fromhex("021201") + b"\x00" * 61]
+    assert scenario["read_sizes"] == [64]
+
+def test_azoth_decodes_percentage_and_charging_states():
+    for pct, state, charging in ((0, 0, False), (50, 1, True), (100, 2, False)):
+        install_azoth_scenario()
+        set_azoth_reply(pct=pct, state=state)
+        assert rhd.read_status(rhd.find_devices()[0]) == {"percentage": pct, "charging": charging}
+
+def test_azoth_invalid_echo_and_timeout_emit_no_status():
+    install_azoth_scenario()
+    set_azoth_reply(prefix=bytes.fromhex("021200"))
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+    install_azoth_scenario()
+    set_azoth_reply(prefix=bytes.fromhex("011201"))
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+    install_azoth_scenario()
+    scenario["reply_fd"] = None
+    assert rhd.read_status(rhd.find_devices()[0]) is None
+
+def test_azoth_blocked_entry_and_udev_rule_cover_both_variants():
+    install_azoth_scenario(with_blocked=True)
+    dev = rhd.find_devices()[0]
+    assert rhd.is_blocked(dev) is True
+    entry = rhd._device_entry(dev)
+    assert entry["blocked"] is True
+    assert entry["unblock_command"] == rhd.udev_unblock_command(0x0B05)
+
+    rule = rhd.udev_rule_for(0x0B05)
+    assert 'ATTRS{idProduct}=="1a83"' in rule
+    assert 'ATTRS{idProduct}=="1a85"' in rule
+    assert 'ATTRS{idProduct}=="1ace"' in rule
+    assert rule.count('MODE="0660"') == 3
 
 
 # ══════════════════════════════════════════════════════════════════════════
