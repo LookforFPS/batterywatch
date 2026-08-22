@@ -45,26 +45,21 @@ class DeviceType(Enum):
     HEADPHONES  = "audio-headphones"
     HEADSET     = "audio-headset"
 
-# A helper class; the same device may show under different pids/ifaces hence this exists to mitigate multiple nearly identical device entries
 class DeviceVariant(NamedTuple):
-    pid:    int         # Product ID
-    iface:  int | None  # Interface
+    pid:         int         # Product ID
+    iface:       int | None  # Interface
+    usage_page:  int | None = None  # Report-descriptor usage page of the battery node
 
-# A helper class; holds where a specific data byte is stored: report/msg ID + data byte offset
 class DataPos(NamedTuple):
     report_id:  int     # Report/msg ID e.g. 0x43
     data_byte:  int     # Where a specific byte is located (offset); byte 0 is always report ID
 
-# Points to a location from where a connection state is read out
-# states holds a dict of possible states in which device can be, if not present defaults to charging = false
-# Use case: devices that does not have a charging true/false byte, in other words whether the device is being charged has to be derived from its connection state
+# Charging derived from a connection-state ID byte; missing ID = not charging
 class ChargingStates(NamedTuple):
     pos:    DataPos         # Location of state ID byte
     states: dict[int, bool] # ID -> charging True/False; missing ID defaults to False
 
-# Power read source
-# InputStream is being sent via a msg every few seconds (~3.5 for SC2)
-# This power scheme supports only devices which periodically send its battery state -> Steam Controller, DualShock etc.
+# Passive: device periodically sends its battery report (e.g. SC2)
 class InputStreamSchema(NamedTuple):
     charge:       DataPos                         # Where to look for battery charge
     charge_range: tuple[int, int] | None          # Battery charge min, max; None = battery is already reported in %
@@ -148,55 +143,65 @@ def _voltage_percentage(voltage_mv, curve):
 # ══════════════════════════════════════════════════════════════════════════
 # devices - the registry of known/supported devices (pure data)
 # ══════════════════════════════════════════════════════════════════════════
-# Main class
-# Represents a device, and holds all the important data used for reading it out
 class Device(NamedTuple):
     name:           str                                  # Device name e.g. "Steam Controller"
     device_type:    DeviceType                           # "gamepad", "mouse" etc. see DeviceUtils.js for all supported types
     vid:            int                                  # Vendor ID
     variants:       tuple[DeviceVariant, ...]            # VID, PID, iface used by device - used as path for where to look up device data
     source:         InputStreamSchema | RequestSchema    # How power is read
-    parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None; None = generic interpret()
+    parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None | KEEP_READING (not a battery frame, keep waiting); None = generic interpret()
 
-# List of known/supported devices
 # iface = None means that any interface contains battery data
 
 
-# ── Logitech HID++ 1.0 headsets ────────────────────────────────────────────
-# One shared protocol (headsetcontrol's requestBatteryHIDPP): write a 20-byte
-# long message, read a 7-byte short reply on report 0x10 that echoes the
-# request's 0xff byte. Only the feature command + mV->% curve differ per model.
-# Commands, PIDs, curves and the vendor interface 3 are taken from
-# headsetcontrol (GPL-3.0): logitech_g533.hpp, logitech_g535.hpp,
-# logitech_gpro.hpp, logitech_g633_g933_935.hpp + protocols/logitech_calibrations.hpp.
+# ── Logitech headset battery voltage protocol ───────────────────────────────
+# Logitech headsets report a raw battery voltage over HID++: write a 20-byte
+# long message, read a 7-byte short reply on report 0x10 (byte 1 echoes the
+# request's 0xff device byte); only the feature command + mV->% curve differ.
+# Commands, PIDs and curves from headsetcontrol (GPL-3.0): logitech_g533.hpp,
+# logitech_g535.hpp, logitech_gpro.hpp, logitech_g633_g933_935.hpp +
+# protocols/logitech_calibrations.hpp. Battery node = report-descriptor usage
+# page 0xff43 (G535: consumer page 0x0c, so it pins interface 3).
+# Status: G733 0x0AB5/0x0AFE, G533, G535, G933, G935 and G PRO X confirmed by
+# real Solaar captures; G733 v3 0x0B1F, G PRO 0x0AA7 and G PRO X v0 0x0AAA are
+# protocol-shared, individually unverified. G PRO X 2 excluded: Solaar lists
+# it as 0x0AF7 on the "Centurion transport", a different protocol family.
 G633_CURVE = ((100, 4100), (80, 3950), (60, 3850), (40, 3750), (20, 3650), (10, 3500), (5, 3300), (0, 3150))
 G533_CURVE = ((100, 4200), (50, 3850), (30, 3790), (20, 3750), (5, 3680), (0, 3330))
 G535_CURVE = ((100, 4175), (50, 3817), (30, 3766), (20, 3730), (5, 3664), (0, 3310))
 GPRO_CURVE = ((100, 4150), (50, 3830), (30, 3780), (20, 3740), (5, 3670), (0, 3320))
 
+# parse() result: plausible-looking but not a valid battery frame (e.g. an
+# unrelated report on the same interface) - discard and keep waiting.
+KEEP_READING = object()
+
 
 def _logitech_voltage_parse(curve):
-    # 0x10 reply: [0]=0x10, [1]=0xff, [2]=status (0xff = off), [3]=0x00,
-    # [4..5]=voltage big-endian, [6]=charge state (0x01 discharging, 0x03 charging)
+    # 0x10 reply: [0]=0x10, [1]=0xff (echo of the request's device byte),
+    # [2]=status (0xff = device off), [3]=reserved, [4..5]=voltage big-endian,
+    # [6]=charge state (0x01 discharging, 0x03 charging) - same semantics as
+    # the flags byte of the G733's HID++ ADC battery feature in Solaar captures.
     def parse(buffers):
         buf = buffers[0x10]
         if buf[2] == 0xFF:
-            return None  # device off / not sending
+            return None  # device off / not sending - definitive answer
         voltage_mv = (buf[4] << 8) | buf[5]
         if voltage_mv < curve[-1][1]:
-            return None  # below the lowest calibrated voltage (offline/invalid)
+            return KEEP_READING  # below the lowest calibrated voltage: not the battery frame
+        if voltage_mv > 4600:
+            return KEEP_READING  # implausibly high for a single-cell Li-ion: not the battery frame
         return {"percentage": _voltage_percentage(voltage_mv, curve),
                 "charging": buf[6] == 0x03}
     return parse
 
 
-def _logitech_headset(name, cmd, curve, *pids):
-    """A single HID++ 1.0 headset; returns the ready-made Device."""
+def _logitech_headset(name, cmd, curve, *pids, usage_page=0xFF43, iface=None):
+    """A single Logitech headset; returns the ready-made Device."""
     return Device(
         name=name,
         device_type=DeviceType.HEADSET,
         vid=0x046D,
-        variants=tuple(DeviceVariant(pid, 3) for pid in pids),
+        variants=tuple(DeviceVariant(pid, iface, usage_page) for pid in pids),
         source=RequestSchema(
             charge=DataPos(0x10, 4),
             charge_range=None,
@@ -227,11 +232,7 @@ KNOWN_DEVICES = [
             request  = bytes.fromhex('b306') + b'\x00' * 62,
             timeout  = REQUEST_TIMEOUT_SEC,
         ),
-        # Keychron M5: byte 20 of the 0xB4 reply is the level (0-100) when
-        # discharging and "128 + level" while charging (the 0x80 flag bit is
-        # set), so charging level = raw - 128; the 0x87/0x89 bytes seen on real
-        # devices decode to 7%/9%, consistent with the 6% discharge observed
-        # just before.
+        # byte 20 = level 0-100 discharging, "128 + level" while charging (0x80 flag)
         parse=lambda buffers: (
             {"percentage": max(0, min(buffers[0xB4][20] - 128, 100)), "charging": True}
             if buffers[0xB4][20] > 100
@@ -263,14 +264,16 @@ KNOWN_DEVICES = [
         ),
         parse=None,
     ),
-    # ── Logitech HID++ 1.0 headsets ────────────────────────────────────────
-    _logitech_headset("Logitech G633/G635/G733/G933/G935", (0x08, 0x0A), G633_CURVE, 0x0A5C, 0x0A89, 0x0A5B, 0x0A87, 0x0AB5, 0x0AFE, 0x0B1F),
+    # ── Logitech headsets ──────────────────────────────────────────────────
+    _logitech_headset("Logitech G733/G933/G935", (0x08, 0x0A), G633_CURVE, 0x0A5B, 0x0A87, 0x0AB5, 0x0AFE, 0x0B1F),
     _logitech_headset("Logitech G533", (0x07, 0x01), G533_CURVE, 0x0A66),
-    _logitech_headset("Logitech G535", (0x05, 0x0D), G535_CURVE, 0x0AC4),
-    _logitech_headset("Logitech G PRO Series", (0x06, 0x0D), GPRO_CURVE, 0x0AA7, 0x0AAA, 0x0ABA, 0x0AFB, 0x0AFC),
+    _logitech_headset("Logitech G535", (0x05, 0x0D), G535_CURVE, 0x0AC4, usage_page=None, iface=3),
+    _logitech_headset("Logitech G PRO Series", (0x06, 0x0D), GPRO_CURVE, 0x0AA7, 0x0AAA, 0x0ABA),
 ]
 
-# Ptr to a location/device that has been found
+# PIDs whose variants select the battery node by report-descriptor usage page
+_USAGE_PAGE_PIDS = {variant.pid for dev in KNOWN_DEVICES for variant in dev.variants if variant.usage_page is not None}
+
 class FoundDevice(NamedTuple):
     devpath: str
     serial:  str
@@ -305,7 +308,6 @@ def parse_uevent(path):
         vid = int(m.group(1), 16)
         pid = int(m.group(2), 16)
 
-    # HID_PHYS holds the physical device path plus its interface: ".../input4"
     iface = -1
     phys = fields.get("HID_PHYS", "")
     m = _HID_PHYS_RE.match(phys)
@@ -317,13 +319,57 @@ def parse_uevent(path):
 
     return vid, pid, iface, serial, phys
 
+# Walks a raw HID report descriptor for its usage pages. Item byte: bits 0-1
+# size (0/1/2/4), bits 2-3 type, bits 4-7 tag. Usage Page = Global/tag 0,
+# Usage = Local/tag 0; 1-byte usages inherit the current page, 2-byte usages
+# carry their own in the high byte.
+def _parse_usage_pages(data):
+    pages = set()
+    page = 0
+    i = 0
+    n = len(data)
+    while i < n:
+        b = data[i]
+        i += 1
+        if b == 0xFE:  # long item: skip its length byte + payload
+            length = data[i] if i < n else 0
+            i += 1 + length
+            continue
+        item_len = (0, 1, 2, 4)[b & 0x03]
+        if i + item_len > n:
+            break
+        value = data[i:i + item_len]
+        i += item_len
+        btype = (b >> 2) & 0x03
+        btag = (b >> 4) & 0x0F
+        if btype == 1 and btag == 0:  # Global / Usage Page
+            page = int.from_bytes(value, "little")
+            pages.add(page)
+        elif btype == 2 and btag == 0:  # Local / Usage
+            usage = int.from_bytes(value, "little")
+            pages.add(page if item_len < 2 else usage >> 8)
+    return pages
+
+# Usage pages declared by the hidraw node's report descriptor; empty on failure
+def hid_usage_pages(path):
+    try:
+        with open(path, "rb") as f:
+            return _parse_usage_pages(f.read())
+    except OSError:
+        return set()
+
 # Returns the matching Device for a given vid/pid/iface, or None
-def match_device(vid, pid, iface):
+def match_device(vid, pid, iface, usage_pages=None):
     for dev in KNOWN_DEVICES:
         if vid != dev.vid:
             continue
         for variant in dev.variants:
             if pid != variant.pid:
+                continue
+            # usage_page variants select the node by its report-descriptor page
+            if variant.usage_page is not None:
+                if usage_pages and variant.usage_page in usage_pages:
+                    return dev
                 continue
             # iface = None in a variant means any interface contains batt data
             if variant.iface is not None and iface != variant.iface:
@@ -335,19 +381,9 @@ def match_device(vid, pid, iface):
 # ══════════════════════════════════════════════════════════════════════════
 # udev - udev rule files/commands for blocked devices
 # ══════════════════════════════════════════════════════════════════════════
-# A device whose hidraw node can't be opened for the access level its schema
-# needs (missing udev rule) is reported as blocked; this section builds the
-# exact rule file and the exact terminal command the user runs to grant access.
-#
-# Each known device (e.g. "Keychron M5") gets ONE rule file that covers ALL of
-# its connection variants (wireless dongle + wired USB), so granting permission
-# once fixes every way the same device can connect - which interface the battery
-# happens to be on is an implementation detail the user shouldn't care about.
-# The file is wholly ours and can be removed with a plain `rm` (no risk of
-# clobbering user-written rules, no merge bookkeeping). The helper never
-# installs rules itself: it emits the exact terminal command on the blocked
-# device's JSON as "unblock_command", and the user runs it on their own terms
-# (no pkexec involved).
+# A node that can't be opened for the access its schema needs (missing udev
+# rule) is reported as blocked, with the exact command to grant access. One rule
+# file per device covers all its variants; the helper never installs rules.
 UDEV_HEADER = '# Generated by the BatteryWatch widget. Do not edit manually; use the "Copy command" button.'
 
 # Where generated rule files are written; tests redirect this to a sandbox dir.
@@ -384,11 +420,7 @@ def udev_rule_for(vid):
 def _rule_exists(vid):
     return os.path.exists(udev_rule_path(vid))
 
-# The exact shell command a user can paste to authorize this one device. The
-# heredoc is wrapped in `sudo sh -c '...'`: fish rejects `<<EOF` redirections in
-# its own command line, but it treats this as a single quoted argument, so the
-# same readable heredoc pastes cleanly in sh, bash, zsh and fish. The rule body
-# holds no shell metacharacters ($, backticks), so the unquoted delimiter is safe.
+# Wrapped in `sudo sh -c '...'` so the heredoc pastes in sh/bash/zsh/fish
 def udev_unblock_command(vid):
     path = udev_rule_path(vid)
     body = "\n".join([UDEV_HEADER] + udev_rule_for(vid).split("\n"))
@@ -419,7 +451,8 @@ def find_devices():
             continue
         vid, pid, iface, serial, phys = parsed
 
-        desc = match_device(vid, pid, iface)
+        usage_pages = hid_usage_pages(f"/sys/class/hidraw/{name}/device/report_descriptor") if pid in _USAGE_PAGE_PIDS else set()
+        desc = match_device(vid, pid, iface, usage_pages)
         if desc is None:
             continue
 
@@ -518,18 +551,19 @@ def read_status_hw(dev):
                 continue
 
             buffers[report_id] = buf
-            # interpret every report of a schema
             # parse(), if set, sees only such report, so every byte needs to be declared via charge/status positions
             if all(r in buffers for r in needed):
                 if dev.desc.parse is not None:
-                    return dev.desc.parse(buffers)
+                    result = dev.desc.parse(buffers)
+                    if result is KEEP_READING:
+                        buffers.pop(report_id, None)  # not the battery frame; keep waiting for a better one
+                        continue
+                    return result
                 return interpret(schema, buffers)
     finally:
         os.close(fd)
 
-# Stateless per run: reports only a CURRENT reading. A device that doesn't
-# answer simply isn't emitted, so the widget drops it on the next poll - same
-# behaviour as the upower-based providers. No state is kept between runs.
+# Stateless: reports a current reading or nothing; no state between runs.
 def read_status(dev):
     return read_status_hw(dev)
 
@@ -567,9 +601,7 @@ def _device_entry(dev):
                 "percentage": status["percentage"], "charging": status["charging"],
                 "deviceType": dev.desc.device_type.value}
     if is_blocked(dev):
-        # Present but no permission to open: report it so the widget can offer
-        # to copy the udev command for this one device.
-        # "unblock_command" is the exact terminal command for this one device.
+        # Present but no permission to open: offer the exact command to authorize it
         return {"name": dev.desc.name, "serial": dev.serial, "blocked": True,
                 "vid": f"{dev.desc.vid:04x}", "pid": f"{dev.pid:04x}",
                 "unblock_command": udev_unblock_command(dev.desc.vid),
