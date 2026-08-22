@@ -33,7 +33,7 @@
 | **KDE Connect** | Battery levels of paired KDE Connect devices (phones, tablets, etc), with easy unpair action |
 | **HID Devices** | Peripherals read directly via Linux HID (currently supports Steam Controller 2, Keychron M5, and Logitech G533/G535/G Pro/G733/G933/G935 headsets) |
 
-> **Note:** Protocol details (commands, PIDs, and battery calibration curves) for the Logitech headsets are sourced from [HeadsetControl](https://github.com/Sapd/HeadsetControl) (GPL-3.0), with attribution in `contents/bin/read_hid_devices`. G533, G535, G733, G933 and G935 are confirmed against real device captures; G733 v3, G PRO and G PRO X share the same protocol but are individually unverified, and the G PRO X 2 is intentionally not supported (it uses a different protocol family).
+> **Note:** Protocol details (commands, PIDs, and battery calibration curves) for the Logitech headsets are sourced from [HeadsetControl](https://github.com/Sapd/HeadsetControl) (GPL-3.0) and [Solaar](https://github.com/pwr-Solaar-Solaar), with attribution in `contents/bin/read_hid_devices`. None of the models has been verified on real hardware yet: support for G533, G535, G733, G933, G935 and G PRO X follows Solaar's device data, while G733 v3, G PRO and G PRO X v0 are protocol-shared extrapolations.
 
 ## Installation
 

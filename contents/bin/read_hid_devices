@@ -162,10 +162,12 @@ class Device(NamedTuple):
 # logitech_g535.hpp, logitech_gpro.hpp, logitech_g633_g933_935.hpp +
 # protocols/logitech_calibrations.hpp. Battery node = report-descriptor usage
 # page 0xff43 (G535: consumer page 0x0c, so it pins interface 3).
-# Status: G733 0x0AB5/0x0AFE, G533, G535, G933, G935 and G PRO X confirmed by
-# real Solaar captures; G733 v3 0x0B1F, G PRO 0x0AA7 and G PRO X v0 0x0AAA are
-# protocol-shared, individually unverified. G PRO X 2 excluded: Solaar lists
-# it as 0x0AF7 on the "Centurion transport", a different protocol family.
+# Status (third-party sources only - unfortunately, I don't have the real hardware to
+# verify these myself): G733 0x0AB5/0x0AFE, G533, G535, G933, G935 and
+# G PRO X follow from Solaar captures/device lists; G733 v3 0x0B1F,
+# G PRO 0x0AA7 and G PRO X v0 0x0AAA are protocol-shared extrapolations.
+# G PRO X 2 excluded: Solaar lists it as 0x0AF7 on the "Centurion transport",
+# a different protocol family.
 G633_CURVE = ((100, 4100), (80, 3950), (60, 3850), (40, 3750), (20, 3650), (10, 3500), (5, 3300), (0, 3150))
 G533_CURVE = ((100, 4200), (50, 3850), (30, 3790), (20, 3750), (5, 3680), (0, 3330))
 G535_CURVE = ((100, 4175), (50, 3817), (30, 3766), (20, 3730), (5, 3664), (0, 3310))

@@ -2,10 +2,11 @@
 
 ## [Unreleased]
 
-## [0.3.2] - 2026-08-04
+## [0.3.2] - 2026-08-22
 
 ### Added
 - **Keychron M5 support** — new request-response HID schema (0xB3:06 request / 0xB4 reply) reads the M5's battery over the vendor interface; works both wireless (Ultra-Link 8K dongle) and wired (USB-C); correct charging decode
+- **Logitech headset support** — battery levels of Logitech G533, G535, G PRO, G733, G933 and G935 headsets, read directly over HID++ request/response; raw battery voltage is mapped to a percentage via per-model calibration curves (protocol details from [HeadsetControl](https://github.com/Sapd/HeadsetControl) and [Solaar](https://github.com/pwr-Solaar-Solaar); not yet verified on real hardware — feedback welcome)
 
 ### Changed
 - **User-run udev authorization** — a device whose battery needs extra permission now shows a lock icon and a "Copy command" button; the user pastes one `sudo tee` command in a terminal on their own terms. A single rule file per device covers all its connection variants (wireless + wired)
@@ -97,6 +98,7 @@
 Initial development releases (v0.1.0 – v0.1.9, through 2026-01-03). Core functionality: monitor battery levels of Bluetooth and wireless devices via UPower, with OpenLinkHub and BatteryWatch Companion integration.
 
 [Unreleased]: https://github.com/itayavra/batterywatch/compare/v0.3.1...HEAD
+[0.3.2]: https://github.com/itayavra/batterywatch/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/itayavra/batterywatch/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/itayavra/batterywatch/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/itayavra/batterywatch/compare/v0.2.1...v0.2.2
