@@ -16,7 +16,9 @@ Item {
     // UPower device type overrides for devices incorrectly reported by UPower
     readonly property var upowerDeviceTypeOverrides: ({
         "logitech k400 plus": "keyboard",  // Keyboard with touchpad, reported as mouse
-        "pro x wireless": "mouse",  // Wireless mouse, reported as keyboard when connected via USB cable
+        // Wireless mice, reported as keyboards when connected via USB cable
+        "pro x wireless": "mouse",
+        "logitech g903 wired/wireless gaming mouse": "mouse",
     })
     
     function refresh() {
