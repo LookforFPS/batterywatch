@@ -71,7 +71,7 @@ unpatched_usb_serial = rhd.usb_serial
 # ══════════════════════════════════════════════════════════════════════════
 scenario = {"uevents": {}, "fake_devs": {}, "reply_fd": None, "reply_buf": bytearray(64),
             "reply_queue": [], "writes": [], "write_data": [], "reads": [], "read_sizes": [],
-            "descriptors": {}, "descriptor_reads": 0}
+            "open_flags": [], "descriptors": {}, "descriptor_reads": 0}
 
 def m5_uevent(node, pid="0000D028", name="Keychron Keychron Ultra-Link 8K", iface=4):
     return (f"DRIVER=hid-generic\nHID_ID=0003:00003434:{pid}\n"
@@ -80,7 +80,7 @@ def m5_uevent(node, pid="0000D028", name="Keychron Keychron Ultra-Link 8K", ifac
 def azoth_uevent(node, pid="00001ACE", iface=1):
     return (f"DRIVER=hid-generic\nHID_ID=0003:00000B05:{pid}\n"
             f"HID_NAME=ROG Azoth\nHID_PHYS=usb-0000:00:14.0-12/input{iface}\n"
-            "HID_UNIQ=azoth-simulated-serial\n")
+            "HID_UNIQ=SN1LAZOTG6C2\n")
 
 def fake_open(path, mode="r", *a, **k):
     if path.startswith("/sys/class/hidraw"):
@@ -92,6 +92,7 @@ def fake_open(path, mode="r", *a, **k):
     return builtins.open(path, mode, *a, **k)
 
 def fake_osopen(path, flags):
+    scenario["open_flags"].append(flags)
     if scenario.get("deny") and path in scenario["fake_devs"]:
         raise PermissionError(13, "Permission denied")
     if path in scenario["fake_devs"]:
@@ -141,6 +142,7 @@ def install_m5_scenario(pid="0000D028", name="Keychron Keychron Ultra-Link 8K", 
     scenario["write_data"] = []
     scenario["reads"] = []
     scenario["read_sizes"] = []
+    scenario["open_flags"] = []
     scenario["reply_buf"] = bytearray(64)
     scenario["reply_queue"] = []
     scenario["reply_fd"] = 306
@@ -159,6 +161,7 @@ def install_sc2_scenario():
     scenario["write_data"] = []
     scenario["reads"] = []
     scenario["read_sizes"] = []
+    scenario["open_flags"] = []
     scenario["reply_buf"] = bytearray(16)
     scenario["reply_queue"] = []
     scenario["reply_fd"] = 207
@@ -185,6 +188,7 @@ def install_g733_scenario(iface=3, usage_page=0xFF43):
     scenario["write_data"] = []
     scenario["reads"] = []
     scenario["read_sizes"] = []
+    scenario["open_flags"] = []
     scenario["reply_buf"] = bytearray(8)
     scenario["reply_queue"] = []
     scenario["reply_fd"] = 208
@@ -203,6 +207,7 @@ def install_azoth_scenario(pid="00001ACE", with_blocked=False):
     scenario["write_data"] = []
     scenario["reads"] = []
     scenario["read_sizes"] = []
+    scenario["open_flags"] = []
     scenario["reply_buf"] = bytearray(65)
     scenario["reply_queue"] = []
     scenario["reply_fd"] = 309 if pid == "00001ACE" else 308
@@ -298,42 +303,45 @@ def test_usb_serial_is_preferred_over_malformed_hid_uniq():
     usb_dir = os.path.dirname(os.path.dirname(hid_dir))
     os.makedirs(hid_dir)
     for name, value in (("idVendor", "0b05\n"), ("idProduct", "1a83\n"),
-                        ("serial", "S2MPGDD00YNA\n")):
+                        ("serial", "SN1LAZOTG6C2\n")):
         with open(os.path.join(usb_dir, name), "w") as file:
             file.write(value)
-    assert unpatched_usb_serial(os.path.join(hid_dir, "uevent"), 0x0B05, 0x1A83) == "S2MPGDD00YNA"
+    assert unpatched_usb_serial(os.path.join(hid_dir, "uevent"), 0x0B05, 0x1A83) == "SN1LAZOTG6C2"
 
-def test_parse_uevent_prefers_sanitized_usb_parent_serial():
+def test_azoth_resolver_prefers_sanitized_usb_parent_serial():
     root = tempfile.mkdtemp()
     hid_dir = os.path.join(root, "usb", "1-3", "1-3:1.1", "hid")
     usb_dir = os.path.dirname(os.path.dirname(hid_dir))
     os.makedirs(hid_dir)
     for name, value in (("idVendor", "0b05\n"), ("idProduct", "1a83\n"),
-                        ("serial", "S2MPGDD00YNA\x18\xbe\n")):
+                        ("serial", "SN1LAZOTG6C2\x18\xbe\n")):
         with open(os.path.join(usb_dir, name), "w") as file:
             file.write(value)
-    uevent = os.path.join(hid_dir, "uevent")
-    with open(uevent, "w") as file:
-        file.write("HID_ID=0003:00000B05:00001A83\n"
-                   "HID_PHYS=usb-0000:00:14.0-3/input1\n"
-                   "HID_UNIQ=should-not-win\n")
-
     saved_usb_serial = rhd.usb_serial
     rhd.usb_serial = unpatched_usb_serial
     try:
-        parsed = rhd.parse_uevent(uevent)
+        serial = rhd._azoth_serial_resolver(
+            os.path.join(hid_dir, "uevent"), 0x0B05, 0x1A83,
+            {"HID_UNIQ": "should-not-win"},
+        )
     finally:
         rhd.usb_serial = saved_usb_serial
-    assert parsed[3] == "S2MPGDD00YNA"
+    assert serial == "SN1LAZOTG6C2"
 
-def test_parse_uevent_truncates_invalid_hid_uniq():
-    scenario["uevents"] = {
-        "hidraw42": ("HID_ID=0003:00000B05:00001A83\n"
-                      "HID_PHYS=usb-0000:00:14.0-3/input1\n"
-                      "HID_UNIQ=S2MPGDD00YNA\x18\xbe\n"),
-    }
-    parsed = rhd.parse_uevent("/sys/class/hidraw/hidraw42/device/uevent")
-    assert parsed[3] == "S2MPGDD00YNA"
+def test_azoth_resolver_truncates_invalid_hid_uniq():
+    assert rhd._azoth_serial_resolver(
+        "unused", 0x0B05, 0x1A83, {"HID_UNIQ": "SN1LAZOTG6C2\x18\xbe"}
+    ) == "SN1LAZOTG6C2"
+
+def test_azoth_resolver_keeps_clean_hid_uniq_byte_exact():
+    assert rhd._azoth_serial_resolver(
+        "unused", 0x0B05, 0x1A83, {"HID_UNIQ": "SN1LAZOTG6C2"}
+    ) == "SN1LAZOTG6C2"
+
+def test_non_azoth_hid_uniq_is_not_resolved_or_sanitized():
+    install_m5_scenario()
+    scenario["uevents"]["hidraw6"] = m5_uevent("hidraw6")[:-1] + "serial\x18\xbe\n"
+    assert rhd.find_devices()[0].serial == "serial\x18\xbe"
 
 def test_reference_match():
     # Reference match (github.com/itayavra/batterywatch/issues/5)
@@ -487,7 +495,7 @@ def test_azoth_discovery_targets_control_interface_only():
     install_azoth_scenario()
     devs = rhd.find_devices()
     assert [dev.devpath for dev in devs] == ["/dev/hidraw9"]
-    assert devs[0].serial == "azoth-simulated-serial"
+    assert devs[0].serial == "SN1LAZOTG6C2"
     assert devs[0].pid == 0x1ACE
 
 def test_azoth_wired_and_wireless_variants_are_found():
@@ -567,6 +575,25 @@ def test_is_blocked_true_on_eacces():
 def test_is_blocked_false_when_readable():
     install_m5_scenario(with_blocked=False)
     assert rhd.is_blocked(rhd.find_devices()[0]) is False
+
+def test_is_blocked_uses_effective_variant_schema_open_mode():
+    # The effective schema can differ from the registry device's default.
+    # Permissions must follow FoundDevice.source, just like reading does.
+    install_m5_scenario()
+    stream_device = next(dev for dev in rhd.KNOWN_DEVICES
+                         if dev.name == "Steam Controller 2")
+    request_device = next(dev for dev in rhd.KNOWN_DEVICES
+                          if dev.name == "Keychron M5")
+    m5 = rhd.find_devices()[0]
+
+    request_variant = rhd.FoundDevice(m5.devpath, m5.serial, stream_device, m5.pid, request_device.source)
+    assert rhd.is_blocked(request_variant) is False
+    assert scenario["open_flags"] == [os.O_RDWR | os.O_NONBLOCK]
+
+    scenario["open_flags"] = []
+    stream_variant = rhd.FoundDevice(m5.devpath, m5.serial, request_device, m5.pid, stream_device.source)
+    assert rhd.is_blocked(stream_variant) is False
+    assert scenario["open_flags"] == [os.O_RDONLY | os.O_NONBLOCK]
 
 
 # ══════════════════════════════════════════════════════════════════════════

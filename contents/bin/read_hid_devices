@@ -16,6 +16,8 @@ Organized in sections mirroring the concerns:
   cli     - JSON output consumed by the widget
 """
 
+from __future__ import annotations
+
 import json
 import os
 import re
@@ -154,6 +156,7 @@ class Device(NamedTuple):
     variants:       tuple[DeviceVariant, ...]            # VID, PID, iface used by device - used as path for where to look up device data
     source:         InputStreamSchema | RequestSchema    # How power is read
     parse:          Callable | None                      # Custom parser: parse(buffers) -> {"percentage", "charging"} | None | KEEP_READING (not a battery frame, keep waiting); None = generic interpret()
+    serial_resolver: Callable | None = None              # Optional resolver(path, vid, pid, uevent_fields) -> serial
 
 # iface = None means that any interface contains battery data
 
@@ -217,6 +220,13 @@ def _logitech_headset(name, cmd, curve, *pids, usage_page=0xFF43, iface=None):
         ),
         parse=_logitech_voltage_parse(curve),
     )
+
+
+def _azoth_serial_resolver(path, vid, pid, fields):
+    """Use Azoth's clean USB serial before its malformed HID serial."""
+    return (usb_serial(path, vid, pid)
+            or printable_serial(fields.get("HID_UNIQ", ""))
+            or "unknown-hid")
 
 
 KNOWN_DEVICES = [
@@ -330,6 +340,7 @@ KNOWN_DEVICES = [
             reply_prefix=bytes.fromhex("001201"),
         ),
         parse=None,
+        serial_resolver=_azoth_serial_resolver,
     ),
     # ── Logitech headsets ──────────────────────────────────────────────────
     _logitech_headset("Logitech G733/G933/G935", (0x08, 0x0A), G633_CURVE, 0x0A5B, 0x0A87, 0x0AB5, 0x0AFE, 0x0B1F),
@@ -355,7 +366,6 @@ class FoundDevice(NamedTuple):
 _HID_ID_RE = re.compile(r"[0-9a-fA-F]+:([0-9a-fA-F]+):([0-9a-fA-F]+)$")
 # HID_PHYS=<phys-path>/input<iface> e.g. "usb-0000:00:14.0-11/input4" -> phys, iface
 _HID_PHYS_RE = re.compile(r"(.*)/input(\d*)")
-_AZOTH_IDS = {(0x0B05, 0x1A83), (0x0B05, 0x1A85), (0x0B05, 0x1ACE)}
 
 def printable_serial(value):
     """Keep the printable prefix of a device-provided serial string."""
@@ -387,7 +397,8 @@ def usb_serial(path, vid, pid):
         current = os.path.dirname(current)
     return None
 
-# Reads sysfs uevent file -> (vid, pid, iface, serial, phys) or None on failure
+# Reads sysfs uevent file -> (vid, pid, iface, fields, phys) or None on failure.
+# Serial resolution is device-specific, so it deliberately happens after matching.
 def parse_uevent(path):
     try:
         with open(path, "r") as file:
@@ -414,17 +425,7 @@ def parse_uevent(path):
         phys = m.group(1)   # shared across a device's interfaces
         iface = int(m.group(2)) if m.group(2) else -1
 
-    if (vid, pid) in _AZOTH_IDS:
-        # Azoth USB descriptors append malformed bytes to its serial. Limit
-        # the workaround to these profiles so existing HID identities retain
-        # their previous behavior.
-        serial = (usb_serial(path, vid, pid)
-                  or printable_serial(fields.get("HID_UNIQ", ""))
-                  or "unknown-hid")
-    else:
-        serial = fields.get("HID_UNIQ", "") or "unknown-hid"
-
-    return vid, pid, iface, serial, phys
+    return vid, pid, iface, fields, phys
 
 # Walks a raw HID report descriptor for its usage pages. Item byte: bits 0-1
 # size (0/1/2/4), bits 2-3 type, bits 4-7 tag. Usage Page = Global/tag 0,
@@ -465,8 +466,8 @@ def hid_usage_pages(path):
     except OSError:
         return set()
 
-# Returns the matching Device and transport variant for a given vid/pid/iface,
-# or None. A variant may constrain the interface, descriptor usage page, or schema.
+# Returns the matching Device and variant for a given vid/pid/iface, or None.
+# A variant may constrain the interface, the descriptor usage page, or both.
 def match_device(vid, pid, iface, usage_pages=None):
     for dev in KNOWN_DEVICES:
         if vid != dev.vid:
@@ -557,13 +558,17 @@ def find_devices():
         parsed = parse_uevent(f"/sys/class/hidraw/{name}/device/uevent")
         if parsed is None:
             continue
-        vid, pid, iface, serial, phys = parsed
+        vid, pid, iface, fields, phys = parsed
 
         usage_pages = hid_usage_pages(f"/sys/class/hidraw/{name}/device/report_descriptor") if pid in _USAGE_PAGE_PIDS else set()
         matched = match_device(vid, pid, iface, usage_pages)
         if matched is None:
             continue
         desc, variant = matched
+
+        serial = (desc.serial_resolver(f"/sys/class/hidraw/{name}/device/uevent", vid, pid, fields)
+                  if desc.serial_resolver is not None
+                  else fields.get("HID_UNIQ", "") or "unknown-hid")
 
         # One entry per physical device: iface=None matches every interface, so
         # skip ones already taken (phys is shared across a device's interfaces)
@@ -584,7 +589,7 @@ def find_devices():
 # access level the schema needs (missing udev rule). Asleep devices *can* be
 # opened, so this only fires for a genuine permissions problem.
 def is_blocked(dev):
-    needs_write = isinstance(dev.desc.source, RequestSchema)
+    needs_write = isinstance(dev.source, RequestSchema)
     flags = os.O_RDWR if needs_write else os.O_RDONLY
     try:
         fd = os.open(dev.devpath, flags | os.O_NONBLOCK)
