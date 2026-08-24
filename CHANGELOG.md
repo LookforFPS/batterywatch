@@ -7,6 +7,7 @@
 ### Added
 - **Keychron M5 support** — new request-response HID schema (0xB3:06 request / 0xB4 reply) reads the M5's battery over the vendor interface; works both wireless (Ultra-Link 8K dongle) and wired (USB-C); correct charging decode
 - **Logitech headset support** — battery levels of Logitech G533, G535, G PRO, G733, G933 and G935 headsets, read directly over HID++ request/response; raw battery voltage is mapped to a percentage via per-model calibration curves (protocol details from [HeadsetControl](https://github.com/Sapd/HeadsetControl) and [Solaar](https://github.com/pwr-Solaar-Solaar); not yet verified on real hardware — feedback welcome)
+- **ROG Azoth support** — battery level of the ASUS ROG Azoth keyboard over wired USB, the 2.4 GHz dongle and the ROG OMNI receiver, read directly via HID request/response with per-transport report formats (contributed by @LookforFPS)
 
 ### Changed
 - **User-run udev authorization** — a device whose battery needs extra permission now shows a lock icon and a "Copy command" button; the user pastes one `sudo tee` command in a terminal on their own terms. A single rule file per device covers all its connection variants (wireless + wired)
@@ -15,6 +16,7 @@
 ### Contributors
 - @MrAdrianPl — reverse-engineered the Keychron M5 battery protocol (hid report probing)
 - StarPepe — on-device testing and verification of the M5 support
+- @LookforFPS — ROG Azoth battery support (wired USB, 2.4 GHz dongle and OMNI receiver), reverse-engineered on hardware
 
 ## [0.3.1] - 2026-07-01
 
